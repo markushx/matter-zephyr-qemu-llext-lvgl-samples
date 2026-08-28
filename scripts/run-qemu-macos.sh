@@ -16,7 +16,8 @@
 # Usage: run-qemu-macos.sh [BUILD_DIR] [DISK_IMAGE]
 set -euo pipefail
 
-BUILD_DIR="${1:-/Users/markusbecker/src/matter-zephyr-qemu/build-persistent}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BUILD_DIR="${1:-$REPO_ROOT/build-persistent}"
 DISK_IMAGE="${2:-$BUILD_DIR/persistent.img}"
 
 QEMU_BIN="$(brew --prefix qemu)/bin/qemu-system-i386"
