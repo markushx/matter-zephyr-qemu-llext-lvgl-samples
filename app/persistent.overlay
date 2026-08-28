@@ -1,0 +1,52 @@
+/*
+ * Opt-in overlay: attach a virtio-blk disk (see persistent.conf) and
+ * auto-mount it FAT via devicetree fstab, so CHIP's Settings storage
+ * survives QEMU restarts instead of living in the (RAM-backed, ephemeral)
+ * flash simulator. Build with:
+ *
+ *   west build ... -- -DEXTRA_CONF_FILE=persistent.conf \
+ *                      -DEXTRA_DTC_OVERLAY_FILE=persistent.overlay
+ *
+ * and run via scripts/run-qemu-macos.sh --persistent, which attaches the
+ * matching QEMU -drive/-device pair backed by a real host disk image file.
+ */
+
+#include <zephyr/dt-bindings/pcie/pcie.h>
+
+/ {
+	pcie0 {
+		virtio-blk-pci {
+			compatible = "virtio,pci";
+			vendor-id = <0x1af4>;
+			device-id = <0x1001>;
+			/* IRQ 11 (e1000's line) is full; take over IRQ 10, freed by
+			 * disabling virtio_input_pci below. */
+			interrupts = <0xa 0x0 0x0>;
+			interrupt-parent = <&intc>;
+			status = "okay";
+
+			virtio_blk: virtio-blk {
+				compatible = "virtio,blk";
+				disk-name = "SD";
+				status = "okay";
+			};
+		};
+	};
+
+	fstab {
+		compatible = "zephyr,fstab";
+
+		persist: persist {
+			compatible = "zephyr,fstab,fatfs";
+			automount;
+			disk-access;
+			mount-point = "/SD:";
+		};
+	};
+};
+
+/* Frees up IRQ 11, which the board's default virtio-input device also wants
+ * (unused for M1 anyway -- no LVGL/touch input yet). */
+&virtio_input_pci {
+	status = "disabled";
+};
