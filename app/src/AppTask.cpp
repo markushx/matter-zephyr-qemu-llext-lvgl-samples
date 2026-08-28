@@ -12,6 +12,10 @@
 #include <platform/CHIPDeviceLayer.h>
 #include <setup_payload/OnboardingCodesUtil.h>
 
+#if defined(CONFIG_LVGL)
+#include "gui/BulbUi.h"
+#endif
+
 using namespace chip;
 using namespace chip::app;
 using namespace chip::Credentials;
@@ -58,6 +62,10 @@ CHIP_ERROR AppTask::Init()
 
     ConfigurationMgr().LogDeviceConfig();
     PrintOnboardingCodes(RendezvousInformationFlags(RendezvousInformationFlag::kOnNetwork));
+
+#if defined(CONFIG_LVGL)
+    BulbUi::Init();
+#endif
 
     return CHIP_NO_ERROR;
 }

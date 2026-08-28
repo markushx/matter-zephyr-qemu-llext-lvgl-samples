@@ -1,0 +1,28 @@
+/*
+ * Opt-in overlay for app/lvgl.conf. Build with:
+ *
+ *   west build ... -- -DEXTRA_CONF_FILE="persistent.conf;lvgl.conf" \
+ *                      -DEXTRA_DTC_OVERLAY_FILE="persistent.overlay;lvgl.overlay"
+ *
+ * qemu_x86's board .dts declares the ramfb framebuffer as a `reserved-memory`
+ * sub-region (`no-map`) at the TOP 4 MiB of the 32 MiB `dram0` node (0x1c00000-
+ * 0x2000000) -- but `dram0` itself (the `zephyr,sram` chosen node, which
+ * drives the linker's usable-RAM region) still declares the FULL 32 MiB.
+ * `reserved-memory`/`no-map` only affects MMU/page-attribute handling for
+ * that range; it does NOT shrink the linker's RAM region. So without this
+ * override, the linker is free to place ordinary kernel data (net buffers,
+ * heaps, thread stacks, ...) inside the very same physical bytes the ramfb
+ * driver treats as its own exclusive raw framebuffer -- silently corrupting
+ * whatever lands there. Confirmed the hard way: with CONFIG_DISPLAY=y alone
+ * (no LVGL, no extra threads at all), CASE/PASE unicast UDP delivery broke
+ * completely (mDNS multicast discovery still worked fine, masking this for a
+ * while) while build-persistent (CONFIG_DISPLAY unset) was unaffected.
+ * Shrinking dram0 to the bottom 28 MiB -- ending exactly where the reserved
+ * region begins -- keeps the linker out of that range entirely.
+ */
+
+#include <mem.h>
+
+&dram0 {
+	reg = <0x0 DT_SIZE_M(28)>;
+};

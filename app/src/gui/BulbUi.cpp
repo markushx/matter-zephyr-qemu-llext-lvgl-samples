@@ -67,9 +67,26 @@ void GuiThread(void *, void *, void *)
     }
 }
 
-K_THREAD_DEFINE(sBulbUiThread, 8192, GuiThread, nullptr, nullptr, nullptr, K_PRIO_COOP(7), 0, 0);
+// Statically-reserved stack, but NOT auto-started via K_THREAD_DEFINE:
+// K_THREAD_DEFINE'd threads start at raw boot time, before CHIP's own stack
+// is up. Started explicitly instead, from AppTask::Init(), once CHIP's
+// stack (and ideally the whole server) is already initialized -- there's no
+// reason for a UI thread to run any earlier than that, and it avoids
+// competing with early boot/init work for no benefit. (The actual root
+// cause of this port's networking breakage under CONFIG_DISPLAY=y turned
+// out to be an e1000 PCI slot/IRQ collision, not thread timing -- see
+// scripts/run-qemu-macos.sh -- but starting this thread late is still the
+// right call on its own merits.)
+K_THREAD_STACK_DEFINE(sGuiThreadStack, 8192);
+struct k_thread sGuiThreadData;
 
 } // namespace
+
+void BulbUi::Init()
+{
+    k_thread_create(&sGuiThreadData, sGuiThreadStack, K_THREAD_STACK_SIZEOF(sGuiThreadStack), GuiThread, nullptr, nullptr,
+                    nullptr, K_PRIO_PREEMPT(10), 0, K_NO_WAIT);
+}
 
 void BulbUi::SetState(bool onOff, uint8_t level)
 {

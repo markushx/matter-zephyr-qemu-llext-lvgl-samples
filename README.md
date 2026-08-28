@@ -107,7 +107,8 @@ console log. It's off by default -- enable it with an extra Kconfig fragment
 ```
 ~/src/zephyrproject/zephyr/.venv/bin/west build -b qemu_x86 \
   app -d build-lvgl -- \
-  -DEXTRA_CONF_FILE="persistent.conf;lvgl.conf" -DEXTRA_DTC_OVERLAY_FILE=persistent.overlay
+  -DEXTRA_CONF_FILE="persistent.conf;lvgl.conf" \
+  -DEXTRA_DTC_OVERLAY_FILE="persistent.overlay;lvgl.overlay"
 
 scripts/run-qemu-macos.sh build-lvgl
 ```
@@ -115,9 +116,35 @@ scripts/run-qemu-macos.sh build-lvgl
 `run-qemu-macos.sh` auto-detects `CONFIG_DISPLAY=y` in the build directory's
 `.config` and opens a QEMU window (`-device ramfb -vga none -display cocoa`)
 instead of running headless; serial/monitor still work as normal over the
-terminal. No devicetree overlay is needed for the display itself --
-`qemu_x86`'s board `.dts` already has the `ramfb0` node enabled
-unconditionally.
+terminal.
+
+`app/lvgl.overlay` shrinks the declared `dram0`/`zephyr,sram` size to exclude
+the top 4 MiB the board reserves for the ramfb framebuffer -- without it, the
+linker is free to place ordinary kernel/network data in the same physical
+bytes the framebuffer driver claims exclusively, which doesn't itself break
+networking but is a real memory-safety bug in the board's own devicetree.
+The actual networking breakage this port hit was separate: `-vga none`
+(needed whenever `CONFIG_DISPLAY=y`, since ramfb replaces the default VGA
+adapter) removes the PCI device normally at slot 1, which shifts `e1000`'s
+auto-assigned slot and, with it, its real interrupt line -- silently
+breaking all incoming UDP delivery (confirmed via GDB: the e1000 ISR simply
+never fired). `run-qemu-macos.sh` pins both `e1000` and `virtio-blk-pci` to
+explicit PCI slots to make this stable regardless of what else is on the
+command line -- see its comments for the full story.
+
+## Debugging tools
+
+`run-qemu-macos.sh` also supports:
+- `GDB=1 scripts/run-qemu-macos.sh ...` -- exposes a GDB stub on `tcp::1234`
+  (`-s`, boot proceeds normally). Attach with e.g.
+  `~/zephyr-sdk-*/gnu/x86_64-zephyr-elf/bin/x86_64-zephyr-elf-gdb <build>/zephyr/zephyr.elf -ex "target remote :1234"`.
+- A second, scriptable QEMU monitor at `<BUILD_DIR>/mon.sock` (HMP, in
+  addition to the normal interactive one on the terminal via `Ctrl-A C`) --
+  useful for e.g. `info pci` to check real PCI slot/IRQ assignments without
+  needing to switch away from the serial console.
+- Console output (serial + the interactive monitor) is duplicated to
+  `<BUILD_DIR>/console.log` (truncated each run) for inspection without
+  copy-pasting from the terminal.
 
 ## Logging
 
