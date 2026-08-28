@@ -72,8 +72,15 @@ if [ "${GDB:-0}" = "1" ]; then
 	GDB_ARGS=(-s)
 fi
 
+# +clflush: needed whenever CONFIG_LLEXT=y. Zephyr's x86
+# arch_dcache_flush_range() (subsys/llext calls this after relocating a
+# freshly-loaded extension, to make sure the CPU's instruction fetch sees
+# the new code) unconditionally emits the CLFLUSH instruction -- the plain
+# `qemu32` CPU model doesn't expose it, causing an immediate "Invalid
+# opcode" CPU fault inside llext_load() the first time an extension is
+# loaded. Harmless/inert for builds that never touch LLEXT.
 exec sudo "$QEMU_BIN" \
-	-m 32 -cpu qemu32,+nx,+pae -machine q35 \
+	-m 32 -cpu qemu32,+nx,+pae,+clflush -machine q35 \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04 -machine acpi=off \
 	-pidfile "$BUILD_DIR/qemu.pid" \
 	-chardev "stdio,id=con,mux=on,logfile=$BUILD_DIR/console.log" -serial chardev:con -mon chardev=con,mode=readline \

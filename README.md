@@ -132,6 +132,62 @@ never fired). `run-qemu-macos.sh` pins both `e1000` and `virtio-blk-pci` to
 explicit PCI slots to make this stable regardless of what else is on the
 command line -- see its comments for the full story.
 
+## LLEXT loadable extensions (optional)
+
+An opt-in manufacturer-specific Matter cluster (`0xFFF1FC01`, EP1,
+`app/src/llext/ExtensionLoaderCluster.cpp`) receives a Zephyr LLEXT binary
+over Matter in chunks, verifies it, and loads + runs it at runtime -- see
+`plan/plan-detailed.md`'s Milestone 3 section for the full design and the
+real bugs found getting it working (a QEMU CPU-model/CLFLUSH mismatch was
+the big one). Needs its own build directory:
+
+```
+~/src/zephyrproject/zephyr/.venv/bin/west build -b qemu_x86 \
+  app -d build-llext -- \
+  -DEXTRA_CONF_FILE="persistent.conf;llext.conf" -DEXTRA_DTC_OVERLAY_FILE=persistent.overlay
+
+scripts/run-qemu-macos.sh build-llext
+```
+
+### Building the sample extension
+
+`app/extensions/hello/` is a trivial standalone extension (prints a message,
+proving the load-then-call round trip) built with Zephyr's LLEXT EDK, not as
+part of the main app build:
+
+```
+cd build-llext
+cmake --build . --target llext-edk   # produces zephyr/llext-edk.tar.xz
+mkdir -p /tmp/edk && tar -xf zephyr/llext-edk.tar.xz -C /tmp/edk
+cd ../app/extensions/hello
+export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1
+export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
+cmake -B build -DLLEXT_EDK_INSTALL_DIR=/tmp/edk/llext-edk
+cmake --build build   # produces build/hello.llext
+```
+
+(`cmake --build build-llext --target llext-edk` needs the same CHIP bootstrap
+environment sourced as a normal build -- see "Build" above -- plus, if
+invoked standalone rather than via `west build`, `PATH` needs
+`~/src/zephyrproject/zephyr/.venv/bin` first so its own internal Python
+lookup finds the venv, not a bare system `python3`.)
+
+### Sending the extension
+
+```
+scripts/send-llext.py app/extensions/hello/build/hello.llext <node-id>
+```
+
+Drives chip-tool's generic `any command-by-id` invocation (no ZAP/codegen
+entry needed for a manufacturer cluster) to send `LoadStart`/`LoadChunk`×N/
+`LoadDone`. Watch the device's own console (or `<BUILD_DIR>/console.log`) for
+`hello from llext` -- confirms the extension was loaded *and executed*, not
+just linked. Read back progress with:
+
+```
+out/chip-tool/chip-tool any read-by-id 0xFFF1FC01 0 <node-id> 1   # Status: 0=Idle 1=Receiving 2=Loaded 3=Error
+```
+
 ## Debugging tools
 
 `run-qemu-macos.sh` also supports:

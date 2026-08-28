@@ -37,6 +37,12 @@ if(CONFIG_LVGL)
     target_sources(app PRIVATE src/gui/BulbUi.cpp)
 endif()
 
+# Opt-in LLEXT loadable-extension support (see app/llext.conf) -- see
+# plan/plan-detailed.md Milestone 3.
+if(CONFIG_LLEXT)
+    target_sources(app PRIVATE src/llext/ExtensionLoaderCluster.cpp)
+endif()
+
 chip_configure_data_model(app
     ZAP_FILE ${CHIP_ROOT}/examples/lighting-app/lighting-common/lighting-app.zap
 )

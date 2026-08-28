@@ -5,6 +5,8 @@
 #include <app/clusters/network-commissioning/network-commissioning.h>
 #include <app/server/Server.h>
 #include <credentials/examples/DeviceAttestationCredsExample.h>
+#include <app/server-cluster/ServerClusterInterfaceRegistry.h>
+#include <data-model-providers/codegen/CodegenDataModelProvider.h>
 #include <data-model-providers/codegen/Instance.h>
 #include <DeviceInfoProviderImpl.h>
 #include <lib/support/CHIPMem.h>
@@ -14,6 +16,10 @@
 
 #if defined(CONFIG_LVGL)
 #include "gui/BulbUi.h"
+#endif
+
+#if defined(CONFIG_LLEXT)
+#include "llext/ExtensionLoaderCluster.h"
 #endif
 
 using namespace chip;
@@ -65,6 +71,13 @@ CHIP_ERROR AppTask::Init()
 
 #if defined(CONFIG_LVGL)
     BulbUi::Init();
+#endif
+
+#if defined(CONFIG_LLEXT)
+    {
+        static RegisteredServerCluster<ExtensionLoaderCluster> sExtensionLoaderCluster;
+        ReturnErrorOnFailure(CodegenDataModelProvider::Instance().Registry().Register(sExtensionLoaderCluster.Registration()));
+    }
 #endif
 
     return CHIP_NO_ERROR;
