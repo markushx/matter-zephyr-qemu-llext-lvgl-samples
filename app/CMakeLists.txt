@@ -31,6 +31,12 @@ target_sources(app PRIVATE
     src/ZclCallbacks.cpp
 )
 
+# Opt-in LVGL bulb UI (see app/lvgl.conf) -- reflects on/off + level state
+# in a QEMU window instead of just the console.
+if(CONFIG_LVGL)
+    target_sources(app PRIVATE src/gui/BulbUi.cpp)
+endif()
+
 chip_configure_data_model(app
     ZAP_FILE ${CHIP_ROOT}/examples/lighting-app/lighting-common/lighting-app.zap
 )

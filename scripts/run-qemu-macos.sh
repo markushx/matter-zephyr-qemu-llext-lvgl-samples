@@ -13,6 +13,11 @@
 # use; Zephyr formats it FAT itself on first boot. To reset commissioning
 # state, delete the disk image (see README.md).
 #
+# If the build was also configured with app/lvgl.conf (CONFIG_DISPLAY=y in
+# the build's .config), this opens a QEMU window (ramfb device, mirroring
+# Zephyr's own cmake/emu/qemu/display.cmake) showing the LVGL bulb UI
+# instead of running headless.
+#
 # Usage: run-qemu-macos.sh [BUILD_DIR] [DISK_IMAGE]
 set -euo pipefail
 
@@ -36,12 +41,18 @@ fi
 # a vector Zephyr's static IDT never wired up).
 DISK_ARGS=(-drive "file=$DISK_IMAGE,if=none,format=raw,id=blk0" -device virtio-blk-pci,drive=blk0,addr=0x4)
 
+DISPLAY_ARGS=(-nographic)
+if grep -q '^CONFIG_DISPLAY=y' "$BUILD_DIR/zephyr/.config" 2>/dev/null; then
+	DISPLAY_ARGS=(-device ramfb -vga none -display cocoa)
+fi
+
 exec sudo "$QEMU_BIN" \
 	-m 32 -cpu qemu32,+nx,+pae -machine q35 \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04 -machine acpi=off \
 	-pidfile "$BUILD_DIR/qemu.pid" \
 	-chardev stdio,id=con,mux=on -serial chardev:con -mon chardev=con,mode=readline \
-	-nographic -no-reboot \
+	-no-reboot \
+	"${DISPLAY_ARGS[@]}" \
 	-netdev vmnet-shared,id=n1 -device e1000,netdev=n1 \
 	"${DISK_ARGS[@]}" \
 	-kernel "$BUILD_DIR/zephyr/zephyr.elf"

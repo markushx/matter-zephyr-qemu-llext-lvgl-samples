@@ -96,6 +96,29 @@ rm build-persistent/persistent.img
 scripts/run-qemu-macos.sh
 ```
 
+## LVGL bulb UI (optional)
+
+An opt-in LVGL widget (a yellow/grey arc + ON/OFF label, `app/src/gui/BulbUi.cpp`)
+reflects the Matter on/off + level state in a QEMU window, instead of only the
+console log. It's off by default -- enable it with an extra Kconfig fragment
+(`app/lvgl.conf`), which needs its own build directory since it changes the
+`.config`:
+
+```
+~/src/zephyrproject/zephyr/.venv/bin/west build -b qemu_x86 \
+  app -d build-lvgl -- \
+  -DEXTRA_CONF_FILE="persistent.conf;lvgl.conf" -DEXTRA_DTC_OVERLAY_FILE=persistent.overlay
+
+scripts/run-qemu-macos.sh build-lvgl
+```
+
+`run-qemu-macos.sh` auto-detects `CONFIG_DISPLAY=y` in the build directory's
+`.config` and opens a QEMU window (`-device ramfb -vga none -display cocoa`)
+instead of running headless; serial/monitor still work as normal over the
+terminal. No devicetree overlay is needed for the display itself --
+`qemu_x86`'s board `.dts` already has the `ramfb0` node enabled
+unconditionally.
+
 ## Logging
 
 `app/include/CHIPProjectConfig.h` mutes Progress/Detail-level logging from
