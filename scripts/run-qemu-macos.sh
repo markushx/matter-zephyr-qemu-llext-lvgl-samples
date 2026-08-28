@@ -6,17 +6,18 @@
 # vmnet requires root, hence the sudo. Requires QEMU built with vmnet support
 # (Homebrew's qemu formula has it).
 #
-# The app is always built with persistent.conf/persistent.overlay (see
-# app/), so this always attaches a virtio-blk disk backed by a real host
-# file -- CHIP's Settings storage (fabrics, ACLs, session resumption, etc.)
-# survives QEMU restarts. The image is created (16 MiB, sparse) on first
-# use; Zephyr formats it FAT itself on first boot. To reset commissioning
-# state, delete the disk image (see README.md).
+# Every sample (plain/, lvgl/, llext/) builds with persistent storage
+# baked in (see each sample's prj.conf + boards/qemu_x86.overlay), so this
+# always attaches a virtio-blk disk backed by a real host file -- CHIP's
+# Settings storage (fabrics, ACLs, session resumption, etc.) survives QEMU
+# restarts. The image is created (16 MiB, sparse) on first use; Zephyr
+# formats it FAT itself on first boot. To reset commissioning state, delete
+# the disk image (see README.md).
 #
-# If the build was also configured with app/lvgl.conf (CONFIG_DISPLAY=y in
-# the build's .config), this opens a QEMU window (ramfb device, mirroring
-# Zephyr's own cmake/emu/qemu/display.cmake) showing the LVGL bulb UI
-# instead of running headless.
+# If the build was also configured with CONFIG_DISPLAY=y (the lvgl/ sample),
+# this opens a QEMU window (ramfb device, mirroring Zephyr's own
+# cmake/emu/qemu/display.cmake) showing the LVGL bulb UI instead of running
+# headless.
 #
 # Console output (serial + monitor, exactly what appears in the terminal)
 # is also duplicated to $BUILD_DIR/console.log (truncated each run), so it
@@ -30,7 +31,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${1:-$REPO_ROOT/build-persistent}"
+BUILD_DIR="${1:-$REPO_ROOT/build-plain}"
 DISK_IMAGE="${2:-$BUILD_DIR/persistent.img}"
 
 QEMU_BIN="$(brew --prefix qemu)/bin/qemu-system-i386"
@@ -44,7 +45,7 @@ fi
 # whichever slot is next available, and on q35 that slot's legacy INTx pin
 # can land on the SAME GSI as another device -- confirmed via QEMU monitor
 # `info pci`. Slot 4 computes to GSI 10, matching the interrupts property in
-# persistent.overlay's virtio-blk-pci node. Without this, the mismatch
+# each sample's boards/qemu_x86.overlay virtio-blk-pci node. Without this, the mismatch
 # causes fs_mount() to hang forever (the real completion interrupt fires on
 # a vector Zephyr's static IDT never wired up).
 DISK_ARGS=(-drive "file=$DISK_IMAGE,if=none,format=raw,id=blk0" -device virtio-blk-pci,drive=blk0,addr=0x4)

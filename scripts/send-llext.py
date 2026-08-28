@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send a Zephyr LLEXT (.llext) binary to a commissioned device over Matter,
 via the manufacturer-specific ExtensionLoaderCluster (0xFFF1FC01, EP1) --
-see app/src/llext/ExtensionLoaderCluster.{h,cpp} and plan/plan-detailed.md
+see llext/src/llext/ExtensionLoaderCluster.{h,cpp} and plan/plan-detailed.md
 Milestone 3.
 
 Drives chip-tool's generic `any command-by-id` invocation (no ZAP/codegen

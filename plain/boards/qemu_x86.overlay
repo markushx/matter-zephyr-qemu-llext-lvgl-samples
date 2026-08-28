@@ -1,0 +1,51 @@
+/*
+ * Attaches a virtio-blk disk and auto-mounts it FAT via devicetree fstab, so
+ * CHIP's Settings storage survives QEMU restarts instead of living in the
+ * (RAM-backed, ephemeral) flash simulator -- see prj.conf's persistent
+ * storage section. Auto-applied by Zephyr's build system (board-name-matched
+ * overlay, same convention as boards/qemu_x86.conf) -- no extra CLI flags
+ * needed.
+ *
+ * Run via scripts/run-qemu-macos.sh, which attaches the matching QEMU
+ * -drive/-device pair backed by a real host disk image file.
+ */
+
+#include <zephyr/dt-bindings/pcie/pcie.h>
+
+/ {
+	pcie0 {
+		virtio-blk-pci {
+			compatible = "virtio,pci";
+			vendor-id = <0x1af4>;
+			device-id = <0x1001>;
+			/* IRQ 11 (e1000's line) is full; take over IRQ 10, freed by
+			 * disabling virtio_input_pci below. */
+			interrupts = <0xa 0x0 0x0>;
+			interrupt-parent = <&intc>;
+			status = "okay";
+
+			virtio_blk: virtio-blk {
+				compatible = "virtio,blk";
+				disk-name = "SD";
+				status = "okay";
+			};
+		};
+	};
+
+	fstab {
+		compatible = "zephyr,fstab";
+
+		persist: persist {
+			compatible = "zephyr,fstab,fatfs";
+			automount;
+			disk-access;
+			mount-point = "/SD:";
+		};
+	};
+};
+
+/* Frees up IRQ 11, which the board's default virtio-input device also wants
+ * (unused here -- no touch input). */
+&virtio_input_pci {
+	status = "disabled";
+};

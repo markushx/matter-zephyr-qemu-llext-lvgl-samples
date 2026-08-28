@@ -49,7 +49,7 @@ public:
     static constexpr size_t kMaxChunkSize = 900;
 
     // Largest extension binary we'll buffer in RAM before loading. Bounded
-    // well below the LLEXT heap budget (app/llext.conf's CONFIG_LLEXT_HEAP_SIZE).
+    // well below the LLEXT heap budget (llext.conf's CONFIG_LLEXT_HEAP_SIZE).
     static constexpr size_t kMaxExtensionSize = 64 * 1024;
 
     ExtensionLoaderCluster() : DefaultServerCluster({ kEndpointId, kClusterId }) {}
