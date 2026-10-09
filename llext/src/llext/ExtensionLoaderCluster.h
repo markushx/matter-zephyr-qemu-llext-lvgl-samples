@@ -6,9 +6,17 @@
 #include <lib/core/CHIPError.h>
 #include <lib/core/TLVReader.h>
 
+struct llext;
+
 // Manufacturer-specific cluster: transports a Zephyr LLEXT binary to the
 // device in chunks, then loads and runs it. See plan/plan-detailed.md,
 // Milestone 3.
+//
+// At most one extension is loaded at a time: a successful LoadDone unloads
+// the previous one first. If the loaded extension exports
+// `int32_t get_value(void)`, the ExtensionValue attribute reads back whatever
+// that function returns (null otherwise) -- i.e. the attribute's value is
+// provided by the extension, not by the app.
 //
 // Not present in any ZAP file -- hand-registered on EP1 directly against
 // CodegenDataModelProvider's registry (see AppTask::Init()). Chosen
@@ -30,7 +38,14 @@ public:
     enum class AttributeId : chip::AttributeId
     {
         kTransferStatus = 0,
+        // nullable int32: result of the loaded extension's get_value(), null
+        // if nothing is loaded or the extension doesn't export one.
+        kExtensionValue = 1,
     };
+
+    // Optional symbol an extension can export to back kExtensionValue.
+    using GetValueFn = int32_t (*)(void);
+    static constexpr char kGetValueSymbol[] = "get_value";
 
     // Named to avoid colliding with chip::Protocols::InteractionModel::Status,
     // which command handlers below also need in scope.
@@ -73,10 +88,17 @@ private:
 
     void SetTransferStatus(TransferStatus status);
     void ResetTransfer();
+    void UnloadExtension();
 
     TransferStatus mTransferStatus = TransferStatus::kIdle;
     uint8_t * mBuffer              = nullptr;
     size_t mExpectedSize           = 0;
     size_t mReceivedBytes          = 0;
     uint32_t mExpectedCrc          = 0;
+
+    // Currently loaded extension, the buffer it lives in (see
+    // ResetTransfer()'s comment), and its get_value() if it exports one.
+    struct llext * mExt  = nullptr;
+    uint8_t * mExtBuffer = nullptr;
+    GetValueFn mGetValue = nullptr;
 };

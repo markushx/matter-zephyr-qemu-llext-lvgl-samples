@@ -4,6 +4,7 @@
 #include <app/AttributeValueEncoder.h>
 #include <app/CommandHandler.h>
 #include <app/data-model/Decode.h>
+#include <app/data-model/Nullable.h>
 #include <app/data-model/StructDecodeIterator.h>
 #include <app/server-cluster/AttributeListBuilder.h>
 #include <lib/support/CodeUtils.h>
@@ -85,14 +86,15 @@ struct LoadChunkFields
 ExtensionLoaderCluster::~ExtensionLoaderCluster()
 {
     ResetTransfer();
+    UnloadExtension();
 }
 
 void ExtensionLoaderCluster::ResetTransfer()
 {
     // NOTE: does NOT free a buffer that a successful HandleLoadDone() has
-    // already handed off to llext_load() (mBuffer is nulled there, without
-    // freeing, once loading succeeds) -- llext may still reference that
-    // memory for the loaded extension's lifetime.
+    // already handed off to llext_load() (it moves to mExtBuffer there,
+    // without freeing, once loading succeeds) -- llext still references that
+    // memory for the loaded extension's lifetime. UnloadExtension() frees it.
     if (mBuffer != nullptr)
     {
         k_free(mBuffer);
@@ -101,6 +103,27 @@ void ExtensionLoaderCluster::ResetTransfer()
     mExpectedSize  = 0;
     mReceivedBytes = 0;
     mExpectedCrc   = 0;
+}
+
+void ExtensionLoaderCluster::UnloadExtension()
+{
+    if (mExt == nullptr)
+    {
+        return;
+    }
+
+    mGetValue = nullptr;
+    int rc    = llext_unload(&mExt);
+    if (rc != 0)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: llext_unload failed: %d", rc);
+    }
+    mExt = nullptr;
+
+    k_free(mExtBuffer);
+    mExtBuffer = nullptr;
+
+    NotifyAttributeChanged(chip::to_underlying(AttributeId::kExtensionValue));
 }
 
 void ExtensionLoaderCluster::SetTransferStatus(TransferStatus status)
@@ -115,6 +138,16 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::ReadAttribute(const DataMo
     {
     case chip::to_underlying(AttributeId::kTransferStatus):
         return encoder.Encode(static_cast<uint8_t>(mTransferStatus));
+    case chip::to_underlying(AttributeId::kExtensionValue): {
+        // Evaluated on every read, so the extension (not this cluster) owns
+        // the value.
+        DataModel::Nullable<int32_t> value;
+        if (mGetValue != nullptr)
+        {
+            value.SetNonNull(mGetValue());
+        }
+        return encoder.Encode(value);
+    }
     case Clusters::Globals::Attributes::FeatureMap::Id:
         return encoder.Encode(static_cast<uint32_t>(0));
     case Clusters::Globals::Attributes::ClusterRevision::Id:
@@ -129,6 +162,8 @@ CHIP_ERROR ExtensionLoaderCluster::Attributes(const ConcreteClusterPath & path,
 {
     DataModel::AttributeEntry entries[] = {
         { chip::to_underlying(AttributeId::kTransferStatus), chip::BitMask<AttributeQualityFlags>(), chip::Access::Privilege::kView,
+          std::nullopt },
+        { chip::to_underlying(AttributeId::kExtensionValue), chip::BitMask<AttributeQualityFlags>(), chip::Access::Privilege::kView,
           std::nullopt },
     };
     AttributeListBuilder listBuilder(builder);
@@ -225,6 +260,11 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleLoadDone()
         return Status::Failure;
     }
 
+    // llext_load() with the name of an already-loaded extension just bumps
+    // that one's use count instead of loading the new binary, so the previous
+    // extension has to go first.
+    UnloadExtension();
+
     struct llext_buf_loader bufLoader = LLEXT_WRITABLE_BUF_LOADER(mBuffer, mExpectedSize);
     struct llext_load_param loadParam = LLEXT_LOAD_PARAM_DEFAULT;
     struct llext * ext                = nullptr;
@@ -248,8 +288,17 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleLoadDone()
         ChipLogError(NotSpecified, "ExtensionLoader: llext_call_fn(\"run\") failed: %d", rc);
     }
 
+    mGetValue = reinterpret_cast<GetValueFn>(const_cast<void *>(llext_find_sym(&ext->exp_tab, kGetValueSymbol)));
+    if (mGetValue != nullptr)
+    {
+        ChipLogProgress(NotSpecified, "ExtensionLoader: extension value = %ld", static_cast<long>(mGetValue()));
+    }
+    NotifyAttributeChanged(chip::to_underlying(AttributeId::kExtensionValue));
+
     // Ownership of mBuffer now belongs to the loaded extension's lifetime,
-    // not to us -- do not free it. See ResetTransfer()'s comment.
+    // not to the transfer -- do not free it. See ResetTransfer()'s comment.
+    mExt           = ext;
+    mExtBuffer     = mBuffer;
     mBuffer        = nullptr;
     mReceivedBytes = 0;
     mExpectedSize  = 0;

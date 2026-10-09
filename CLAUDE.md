@@ -41,6 +41,15 @@ about *how to work here*, not what the project is.
   Don't reintroduce a separate non-persistent build — the persistent config
   is a strict superset and `run-qemu-macos.sh` assumes it.
 
+## Tests you can run yourself
+
+- `scripts/run-llext-ztest.sh` builds and runs the `ExtensionLoaderCluster`
+  ztest suite (`llext/tests/extension_value/`) under QEMU with user-mode
+  networking -- no sudo, so unlike `run-qemu-macos.sh` it works from Claude's
+  Bash tool. Run it after touching `llext/src/llext/` or `llext/extensions/`.
+  Anything that needs real Matter traffic (commissioning, chip-tool) still
+  needs the user to run `run-qemu-macos.sh`.
+
 ## Boot/QEMU debugging
 
 - `run-qemu-macos.sh` needs `sudo` (vmnet requires root) and **cannot be run

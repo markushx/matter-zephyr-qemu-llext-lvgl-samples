@@ -20,9 +20,10 @@ own with no extra CLI flags:
   window instead of only the console log.
 - **[`llext/`](llext/)** — `plain/` plus a manufacturer-specific Matter
   cluster that can receive a Zephyr LLEXT (Linkable Loadable Extension)
-  binary over Matter and load + run it at runtime. Includes a sample
-  extension (`llext/extensions/hello/`) and a host-side script
-  (`scripts/send-llext.py`) to send it.
+  binary over Matter and load + run it at runtime. Includes sample
+  extensions (`llext/extensions/`), a host-side script
+  (`scripts/send-llext.py`) to send one, and a ztest suite for the cluster
+  (`llext/tests/extension_value/`, run with `scripts/run-llext-ztest.sh`).
 
 Each sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
@@ -149,11 +150,13 @@ over Matter in chunks, verifies it, and loads + runs it at runtime -- see
 real bugs found getting it working (a QEMU CPU-model/CLFLUSH mismatch was
 the big one).
 
-### Building the sample extension
+### Building the sample extensions
 
 `llext/extensions/hello/` is a trivial standalone extension (prints a
-message, proving the load-then-call round trip) built with Zephyr's LLEXT
-EDK, not as part of the main app build:
+message, proving the load-then-call round trip). `value42/` and
+`value1337/` additionally export `int32_t get_value(void)`, which backs the
+cluster's `ExtensionValue` attribute (see below). All are built with
+Zephyr's LLEXT EDK, not as part of the main app build:
 
 ```
 cd build-llext
@@ -165,6 +168,9 @@ export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
 cmake -B build -DLLEXT_EDK_INSTALL_DIR=/tmp/edk/llext-edk
 cmake --build build   # produces build/hello.llext
 ```
+
+Repeat the last three lines in `../value42` and `../value1337` for the other
+two.
 
 (`cmake --build build-llext --target llext-edk` needs the same CHIP
 bootstrap environment sourced as a normal build -- see "Build" above --
@@ -187,6 +193,52 @@ just linked. Read back progress with:
 ```
 out/chip-tool/chip-tool any read-by-id 0xFFF1FC01 0 <node-id> 1   # Status: 0=Idle 1=Receiving 2=Loaded 3=Error
 ```
+
+Only one extension is loaded at a time: a successful `LoadDone` unloads the
+previous one before loading the new one.
+
+### Extension-provided attribute value
+
+Attribute 1 (`ExtensionValue`, nullable int32) is provided by the loaded
+extension rather than by the app: if the extension exports
+`int32_t get_value(void)` (`LL_EXTENSION_SYMBOL(get_value)`), every read of
+the attribute calls it and returns the result. It reads as null when nothing
+is loaded or the extension has no `get_value` (e.g. `hello`).
+
+```
+scripts/send-llext.py llext/extensions/value42/build/value42.llext <node-id>
+out/chip-tool/chip-tool any read-by-id 0xFFF1FC01 1 <node-id> 1   # Data = 42 (signed)
+```
+
+### Tests
+
+```
+scripts/run-llext-ztest.sh
+```
+
+builds `llext/tests/extension_value/` into `build-llext-test/` and runs it
+under QEMU -- **no sudo, no commissioning, no chip-tool needed**. It is a
+Zephyr ztest suite that links the real `ExtensionLoaderCluster` with the
+`llext/` sample's own Kconfig/devicetree, embeds `hello`, `value42` and
+`value1337` (built in-tree from the same sources via `add_llext_target`),
+and drives the cluster's actual `LoadStart`/`LoadChunk`/`LoadDone` and
+`ReadAttribute` handlers with TLV-encoded requests -- everything except the
+Matter transport. It checks that:
+
+- `ExtensionValue` is null with nothing loaded;
+- loading `value42` → `value1337` → `value42` reads back 42 → 1337 → 42;
+- an extension without `get_value` (`hello`) reads back null;
+- a transfer with a bad CRC fails, leaves the previous extension (and its
+  value) in place, and a correct retry then works.
+
+The script exits 0 only on ztest's `PROJECT EXECUTION SUCCESSFUL`; the full
+console output is in `build-llext-test/console.log`.
+
+`scripts/test-llext-values.py <node-id>` is the over-the-air counterpart: run
+against a running, commissioned `build-llext` device (so it needs
+`run-qemu-macos.sh` and its sudo), it sends `value42`, `value1337` and
+`value42` again through chip-tool and checks that `ExtensionValue` reads back
+42 / 1337 / 42.
 
 ## Debugging tools
 
