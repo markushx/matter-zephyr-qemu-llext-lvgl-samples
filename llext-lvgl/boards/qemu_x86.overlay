@@ -1,0 +1,72 @@
+/*
+ * Attaches a virtio-blk disk and auto-mounts it FAT via devicetree fstab, so
+ * CHIP's Settings storage survives QEMU restarts instead of living in the
+ * (RAM-backed, ephemeral) flash simulator -- see prj.conf's persistent
+ * storage section. Auto-applied by Zephyr's build system (board-name-matched
+ * overlay, same convention as boards/qemu_x86.conf) -- no extra CLI flags
+ * needed.
+ *
+ * Run via scripts/run-qemu-macos.sh, which attaches the matching QEMU
+ * -drive/-device pair backed by a real host disk image file.
+ */
+
+#include <zephyr/dt-bindings/pcie/pcie.h>
+#include <mem.h>
+
+/ {
+	pcie0 {
+		virtio-blk-pci {
+			compatible = "virtio,pci";
+			vendor-id = <0x1af4>;
+			device-id = <0x1001>;
+			/* IRQ 11 (e1000's line) is full; take over IRQ 10, freed by
+			 * disabling virtio_input_pci below. */
+			interrupts = <0xa 0x0 0x0>;
+			interrupt-parent = <&intc>;
+			status = "okay";
+
+			virtio_blk: virtio-blk {
+				compatible = "virtio,blk";
+				disk-name = "SD";
+				status = "okay";
+			};
+		};
+	};
+
+	fstab {
+		compatible = "zephyr,fstab";
+
+		persist: persist {
+			compatible = "zephyr,fstab,fatfs";
+			automount;
+			disk-access;
+			mount-point = "/SD:";
+		};
+	};
+};
+
+/* Frees up IRQ 11, which the board's default virtio-input device also wants
+ * (unused here -- no touch input). */
+&virtio_input_pci {
+	status = "disabled";
+};
+
+/*
+ * qemu_x86's board .dts declares the ramfb framebuffer as a `reserved-memory`
+ * sub-region (`no-map`) at the TOP 4 MiB of the 32 MiB `dram0` node (0x1c00000-
+ * 0x2000000) -- but `dram0` itself (the `zephyr,sram` chosen node, which
+ * drives the linker's usable-RAM region) still declares the FULL 32 MiB.
+ * `reserved-memory`/`no-map` only affects MMU/page-attribute handling for
+ * that range; it does NOT shrink the linker's RAM region. So without this
+ * override, the linker is free to place ordinary kernel data (net buffers,
+ * heaps, thread stacks, ...) inside the very same physical bytes the ramfb
+ * driver treats as its own exclusive raw framebuffer -- silently corrupting
+ * whatever lands there. Confirmed the hard way: with CONFIG_DISPLAY=y alone
+ * (no LVGL, no extra threads at all), CASE/PASE unicast UDP delivery broke
+ * completely (mDNS multicast discovery still worked fine, masking this for a
+ * while). Shrinking dram0 to the bottom 28 MiB -- ending exactly where the
+ * reserved region begins -- keeps the linker out of that range entirely.
+ */
+&dram0 {
+	reg = <0x0 DT_SIZE_M(28)>;
+};

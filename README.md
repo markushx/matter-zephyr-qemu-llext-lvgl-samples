@@ -24,6 +24,10 @@ own with no extra CLI flags:
   extensions (`llext/extensions/`), a host-side script
   (`scripts/send-llext.py`) to send one, and a ztest suite for the cluster
   (`llext/tests/extension_value/`, run with `scripts/run-llext-ztest.sh`).
+- **[`llext-lvgl/`](llext-lvgl/)** — `lvgl/` and `llext/` combined: the
+  extension loaded over Matter *is* the bulb's LVGL UI. Includes two UI
+  extensions (`llext-lvgl/extensions/ui_bar/`, `ui_led/`) and a ztest suite
+  that screenshots them (`llext-lvgl/tests/extension_ui/`).
 
 Each sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
@@ -55,8 +59,9 @@ export PATH="~/src/connectedhomeip-worktree-zephyr/.environment/extra-cipd/zap:$
   ~/src/matter-zephyr-qemu/plain -d ~/src/matter-zephyr-qemu/build-plain
 ```
 
-Swap `plain` for `lvgl` or `llext` (and `build-plain` for `build-lvgl` /
-`build-llext`) to build one of the other samples — each needs its own build
+Swap `plain` for `lvgl`, `llext` or `llext-lvgl` (and `build-plain` for
+`build-lvgl` / `build-llext` / `build-llext-lvgl`) to build one of the other
+samples — each needs its own build
 directory since their Kconfig differs, but the command is otherwise
 identical; no extra `-DEXTRA_CONF_FILE`/`-DEXTRA_DTC_OVERLAY_FILE` flags
 required.
@@ -73,7 +78,7 @@ run it.)
 ## Run
 
 ```
-scripts/run-qemu-macos.sh [build-plain|build-lvgl|build-llext]
+scripts/run-qemu-macos.sh [build-plain|build-lvgl|build-llext|build-llext-lvgl]
 ```
 
 Defaults to `build-plain`. Requires `sudo` (vmnet needs root) — run it
@@ -81,7 +86,7 @@ yourself in an interactive terminal so you can enter your password; it
 can't be driven non-interactively. On first run it creates a 16 MiB disk
 image at `<BUILD_DIR>/persistent.img` and Zephyr formats it FAT on first
 boot. `run-qemu-macos.sh` auto-detects `CONFIG_DISPLAY=y` in the build
-directory's `.config` (i.e. the `lvgl/` sample) and opens a QEMU window
+directory's `.config` (i.e. the `lvgl/` and `llext-lvgl/` samples) and opens a QEMU window
 (`-device ramfb -vga none -display cocoa`) instead of running headless;
 serial/monitor still work as normal over the terminal.
 
@@ -109,7 +114,7 @@ a file on a FAT volume on a virtio-blk disk backed by
 a device commissioned in one run is still commissioned after killing and
 restarting QEMU, as long as the same disk image is reused — no
 `isa-debug-exit`/normal QEMU shutdown, kill, or crash touches the image file
-on disk. All three samples build with this enabled.
+on disk. All samples build with this enabled.
 
 **To reset persistence** (force re-commissioning, e.g. after changing the
 data model or to start clean): delete the disk image and let the script
@@ -239,6 +244,90 @@ against a running, commissioned `build-llext` device (so it needs
 `run-qemu-macos.sh` and its sudo), it sends `value42`, `value1337` and
 `value42` again through chip-tool and checks that `ExtensionValue` reads back
 42 / 1337 / 42.
+
+## Extension-provided LVGL UI (`llext-lvgl/`)
+
+Combines the two samples above: the device shows the `lvgl/` sample's bulb
+widget until an extension that provides a UI is loaded through the
+`ExtensionLoaderCluster`, which then replaces it -- no rebuild or restart of
+the device. Loading another extension swaps the UI again; the new UI picks
+up the bulb's current on/off + level state.
+
+| built-in | `ui_bar` | `ui_led` |
+| --- | --- | --- |
+| ![built-in arc](llext-lvgl/doc/builtin.png) | ![dimmer bar](llext-lvgl/doc/ui_bar.png) | ![lamp](llext-lvgl/doc/ui_led.png) |
+
+(Screenshots taken by the test suite below.)
+
+### Writing a UI extension
+
+The contract is `llext-lvgl/include/bulb_ui_extension.h`: export two
+functions with `LL_EXTENSION_SYMBOL`,
+
+```c
+void ui_create(lv_obj_t *parent);          /* build the UI inside parent */
+void ui_update(bool on, uint8_t percent);  /* show the bulb's state */
+```
+
+Both are called on the app's GUI thread only. `parent` is a screen-sized
+container owned by that UI; the app deletes it, and everything in it, before
+the extension is unloaded, so there is no destroy hook.
+
+An extension can only call the LVGL functions the app exports to it, listed
+in `llext-lvgl/src/gui/LvglExports.c` (objects, local styles, colors, and
+the label/arc/bar/led widgets). Calling anything else makes the load fail
+with `Undefined symbol ...` on the device console and `TransferStatus` =
+Error; add an `EXPORT_SYMBOL` line there and rebuild the app. (`static
+inline` LVGL helpers such as `lv_pct()` need no entry.)
+
+### Building and sending the UI extensions
+
+Same procedure as for `llext/` ("Building the sample extensions" above),
+against this sample's own EDK:
+
+```
+cd build-llext-lvgl
+cmake --build . --target llext-edk
+mkdir -p /tmp/edk-lvgl && tar -xf zephyr/llext-edk.tar.xz -C /tmp/edk-lvgl
+export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1
+export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
+for ext in ui_bar ui_led; do
+  cmake -S ../llext-lvgl/extensions/$ext -B ../llext-lvgl/extensions/$ext/build \
+    -DLLEXT_EDK_INSTALL_DIR=/tmp/edk-lvgl/llext-edk
+  cmake --build ../llext-lvgl/extensions/$ext/build   # produces build/$ext.llext
+done
+```
+
+With `scripts/run-qemu-macos.sh build-llext-lvgl` running and the device
+commissioned:
+
+```
+scripts/send-llext.py llext-lvgl/extensions/ui_bar/build/ui_bar.llext <node-id>
+out/chip-tool/chip-tool onoff on <node-id> 1
+out/chip-tool/chip-tool levelcontrol move-to-level 128 0 0 0 <node-id> 1
+scripts/send-llext.py llext-lvgl/extensions/ui_led/build/ui_led.llext <node-id>
+```
+
+The QEMU window switches from the arc to the dimmer bar, follows the on/off
+and level commands, then switches to the lamp. An extension without
+`ui_create`/`ui_update` (e.g. `llext/`'s `hello`) still loads; the UI then
+falls back to the built-in one.
+
+### Tests
+
+```
+scripts/run-llext-ztest.sh llext-lvgl/tests/extension_ui
+```
+
+Like the `llext/` suite, this needs no sudo, commissioning or chip-tool, and
+opens no window. It runs the real cluster, GUI thread and LVGL rendering in
+QEMU, loads `ui_bar` → `ui_led` → `ui_bar` through the cluster's command
+handlers while changing the bulb state, and finally drops the cluster to
+check the built-in UI comes back. After each step the script saves a QEMU
+screendump to `build-llext-lvgl-test/screenshots/<step>.png`. Besides
+ztest's own verdict, the run fails if a screenshot is missing or if any two
+are identical -- every step is supposed to change the picture. Look at the
+PNGs to judge the UIs themselves.
 
 ## Debugging tools
 
