@@ -1,5 +1,6 @@
 #include "AppTask.h"
 #include "EthernetNetworkCommissioningDriver.h"
+#include "LightingManager.h"
 
 #include <app/TestEventTriggerDelegate.h>
 #include <app/clusters/network-commissioning/network-commissioning.h>
@@ -55,6 +56,8 @@ CHIP_ERROR AppTask::Init()
     ReturnErrorOnFailure(sEthernetCommissioningInstance.Init());
 
     ReturnErrorOnFailure(Server::GetInstance().Init(sInitParams));
+
+    LightingManager::GetInstance().Init();
 
     ConfigurationMgr().LogDeviceConfig();
     PrintOnboardingCodes(RendezvousInformationFlags(RendezvousInformationFlag::kOnNetwork));

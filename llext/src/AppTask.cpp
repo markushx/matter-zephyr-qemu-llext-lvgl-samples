@@ -1,5 +1,6 @@
 #include "AppTask.h"
 #include "EthernetNetworkCommissioningDriver.h"
+#include "LightingManager.h"
 #include "llext/ExtensionLoaderCluster.h"
 
 #include <app/TestEventTriggerDelegate.h>
@@ -58,6 +59,8 @@ CHIP_ERROR AppTask::Init()
     ReturnErrorOnFailure(sEthernetCommissioningInstance.Init());
 
     ReturnErrorOnFailure(Server::GetInstance().Init(sInitParams));
+
+    LightingManager::GetInstance().Init();
 
     ConfigurationMgr().LogDeviceConfig();
     PrintOnboardingCodes(RendezvousInformationFlags(RendezvousInformationFlag::kOnNetwork));

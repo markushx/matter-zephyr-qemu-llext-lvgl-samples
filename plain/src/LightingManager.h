@@ -11,6 +11,9 @@ public:
         return instance;
     }
 
+    // Picks up the OnOff/CurrentLevel attribute values restored from
+    // persistent storage. Must be called after Server::Init().
+    void Init();
     void Set(bool onOff);
     void SetLevel(uint8_t level);
     bool IsTurnedOn() const { return mOnOff; }
