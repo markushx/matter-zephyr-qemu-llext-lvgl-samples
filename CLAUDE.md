@@ -44,14 +44,14 @@ about *how to work here*, not what the project is.
 ## Tests you can run yourself
 
 - `scripts/run-llext-ztest.sh` builds and runs the `ExtensionLoaderCluster`
-  ztest suite (`llext/tests/extension_value/`) under QEMU with user-mode
+  ztest suite (`2_llext/tests/extension_value/`) under QEMU with user-mode
   networking -- no sudo, so unlike `run-qemu-macos.sh` it works from Claude's
-  Bash tool. Run it after touching `llext/src/llext/` or `llext/extensions/`.
-- `scripts/run-llext-ztest.sh llext-lvgl/tests/extension_ui` does the same
-  for the `llext-lvgl/` sample and saves a QEMU screendump per test step to
+  Bash tool. Run it after touching `2_llext/src/llext/` or `2_llext/extensions/`.
+- `scripts/run-llext-ztest.sh 3_llext_lvgl/tests/extension_ui` does the same
+  for the `3_llext_lvgl/` sample and saves a QEMU screendump per test step to
   `build-llext-lvgl-test/screenshots/*.png` -- Read those to actually see
   what LVGL rendered; the script itself only checks they all differ. Run it
-  after touching `llext-lvgl/src/` or `llext-lvgl/extensions/`.
+  after touching `3_llext_lvgl/src/` or `3_llext_lvgl/extensions/`.
   Anything that needs real Matter traffic (commissioning, chip-tool) still
   needs the user to run `run-qemu-macos.sh`.
 

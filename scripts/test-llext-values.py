@@ -3,10 +3,10 @@
 (0xFFF1FC01 attribute 1, EP1): loads two different LLEXT extensions in turn
 and checks that the attribute reads back each one's own get_value() result.
 
-Needs a running, already-commissioned `llext/` sample (see README.md "LLEXT
+Needs a running, already-commissioned `2_llext/` sample (see README.md "LLEXT
 loadable extensions") and both extensions built:
-    llext/extensions/value42/build/value42.llext      -> 42
-    llext/extensions/value1337/build/value1337.llext  -> 1337
+    2_llext/extensions/value42/build/value42.llext      -> 42
+    2_llext/extensions/value1337/build/value1337.llext  -> 1337
 
 value42 is loaded a second time at the end, so the test also passes on a
 device that already had value1337 loaded and proves replacement works in
@@ -21,7 +21,7 @@ import subprocess
 import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-EXTENSIONS_DIR = os.path.join(SCRIPT_DIR, "..", "llext", "extensions")
+EXTENSIONS_DIR = os.path.join(SCRIPT_DIR, "..", "2_llext", "extensions")
 SEND_LLEXT = os.path.join(SCRIPT_DIR, "send-llext.py")
 
 CLUSTER_ID = "0xFFF1FC01"

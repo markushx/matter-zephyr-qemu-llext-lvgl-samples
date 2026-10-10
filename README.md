@@ -12,22 +12,22 @@ etc.) — worth reading before touching the build if something breaks.
 Three independent, self-contained Zephyr applications, each buildable on its
 own with no extra CLI flags:
 
-- **[`plain/`](plain/)** — the base light bulb: on/off + level control,
+- **[`0_plain/`](0_plain/)** — the base light bulb: on/off + level control,
   commissioning over Ethernet, persistent storage (survives QEMU restarts).
   Start here.
-- **[`lvgl/`](lvgl/)** — `plain/` plus an LVGL widget (a yellow/grey arc +
+- **[`1_lvgl/`](1_lvgl/)** — `0_plain/` plus an LVGL widget (a yellow/grey arc +
   ON/OFF label) that reflects the bulb's on/off + level state in a QEMU
   window instead of only the console log.
-- **[`llext/`](llext/)** — `plain/` plus a manufacturer-specific Matter
+- **[`2_llext/`](2_llext/)** — `0_plain/` plus a manufacturer-specific Matter
   cluster that can receive a Zephyr LLEXT (Linkable Loadable Extension)
   binary over Matter and load + run it at runtime. Includes sample
-  extensions (`llext/extensions/`), a host-side script
+  extensions (`2_llext/extensions/`), a host-side script
   (`scripts/send-llext.py`) to send one, and a ztest suite for the cluster
-  (`llext/tests/extension_value/`, run with `scripts/run-llext-ztest.sh`).
-- **[`llext-lvgl/`](llext-lvgl/)** — `lvgl/` and `llext/` combined: the
+  (`2_llext/tests/extension_value/`, run with `scripts/run-llext-ztest.sh`).
+- **[`3_llext_lvgl/`](3_llext_lvgl/)** — `1_lvgl/` and `2_llext/` combined: the
   extension loaded over Matter *is* the bulb's LVGL UI. Includes two UI
-  extensions (`llext-lvgl/extensions/ui_bar/`, `ui_led/`) and a ztest suite
-  that screenshots them (`llext-lvgl/tests/extension_ui/`).
+  extensions (`3_llext_lvgl/extensions/ui_bar/`, `ui_led/`) and a ztest suite
+  that screenshots them (`3_llext_lvgl/tests/extension_ui/`).
 
 Each sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
@@ -56,11 +56,12 @@ source ~/src/connectedhomeip-worktree-zephyr/.environment/activate.sh
 export PATH="~/src/connectedhomeip-worktree-zephyr/.environment/extra-cipd/zap:$PATH"
 
 ~/src/zephyrproject/zephyr/.venv/bin/west build -b qemu_x86 \
-  ~/src/matter-zephyr-qemu/plain -d ~/src/matter-zephyr-qemu/build-plain
+  ~/src/matter-zephyr-qemu/0_plain -d ~/src/matter-zephyr-qemu/build-plain
 ```
 
-Swap `plain` for `lvgl`, `llext` or `llext-lvgl` (and `build-plain` for
-`build-lvgl` / `build-llext` / `build-llext-lvgl`) to build one of the other
+Swap `0_plain` for `1_lvgl`, `2_llext` or `3_llext_lvgl` (and `build-plain` for
+`build-lvgl` / `build-llext` / `build-llext-lvgl` — build directories are
+named without the number prefix) to build one of the other
 samples — each needs its own build
 directory since their Kconfig differs, but the command is otherwise
 identical; no extra `-DEXTRA_CONF_FILE`/`-DEXTRA_DTC_OVERLAY_FILE` flags
@@ -86,7 +87,7 @@ yourself in an interactive terminal so you can enter your password; it
 can't be driven non-interactively. On first run it creates a 16 MiB disk
 image at `<BUILD_DIR>/persistent.img` and Zephyr formats it FAT on first
 boot. `run-qemu-macos.sh` auto-detects `CONFIG_DISPLAY=y` in the build
-directory's `.config` (i.e. the `lvgl/` and `llext-lvgl/` samples) and opens a QEMU window
+directory's `.config` (i.e. the `1_lvgl/` and `3_llext_lvgl/` samples) and opens a QEMU window
 (`-device ramfb -vga none -display cocoa`) instead of running headless;
 serial/monitor still work as normal over the terminal.
 
@@ -125,13 +126,13 @@ rm build-plain/persistent.img
 scripts/run-qemu-macos.sh
 ```
 
-## LVGL bulb UI (`lvgl/`)
+## LVGL bulb UI (`1_lvgl/`)
 
-An LVGL widget (a yellow/grey arc + ON/OFF label, `lvgl/src/gui/BulbUi.cpp`)
+An LVGL widget (a yellow/grey arc + ON/OFF label, `1_lvgl/src/gui/BulbUi.cpp`)
 reflects the Matter on/off + level state in a QEMU window, instead of only
 the console log.
 
-`lvgl/boards/qemu_x86.overlay` shrinks the declared `dram0`/`zephyr,sram`
+`1_lvgl/boards/qemu_x86.overlay` shrinks the declared `dram0`/`zephyr,sram`
 size to exclude the top 4 MiB the board reserves for the ramfb framebuffer
 -- without it, the linker is free to place ordinary kernel/network data in
 the same physical bytes the framebuffer driver claims exclusively, which
@@ -146,10 +147,10 @@ via GDB: the e1000 ISR simply never fired). `run-qemu-macos.sh` pins both
 regardless of what else is on the command line -- see its comments for the
 full story.
 
-## LLEXT loadable extensions (`llext/`)
+## LLEXT loadable extensions (`2_llext/`)
 
 A manufacturer-specific Matter cluster (`0xFFF1FC01`, EP1,
-`llext/src/llext/ExtensionLoaderCluster.cpp`) receives a Zephyr LLEXT binary
+`2_llext/src/llext/ExtensionLoaderCluster.cpp`) receives a Zephyr LLEXT binary
 over Matter in chunks, verifies it, and loads + runs it at runtime -- see
 `plan/plan-detailed.md`'s Milestone 3 section for the full design and the
 real bugs found getting it working (a QEMU CPU-model/CLFLUSH mismatch was
@@ -157,7 +158,7 @@ the big one).
 
 ### Building the sample extensions
 
-`llext/extensions/hello/` is a trivial standalone extension (prints a
+`2_llext/extensions/hello/` is a trivial standalone extension (prints a
 message, proving the load-then-call round trip). `value42/` and
 `value1337/` additionally export `int32_t get_value(void)`, which backs the
 cluster's `ExtensionValue` attribute (see below). All are built with
@@ -167,7 +168,7 @@ Zephyr's LLEXT EDK, not as part of the main app build:
 cd build-llext
 cmake --build . --target llext-edk   # produces zephyr/llext-edk.tar.xz
 mkdir -p /tmp/edk && tar -xf zephyr/llext-edk.tar.xz -C /tmp/edk
-cd ../llext/extensions/hello
+cd ../2_llext/extensions/hello
 export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1
 export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
 cmake -B build -DLLEXT_EDK_INSTALL_DIR=/tmp/edk/llext-edk
@@ -186,7 +187,7 @@ lookup finds the venv, not a bare system `python3`.)
 ### Sending the extension
 
 ```
-scripts/send-llext.py llext/extensions/hello/build/hello.llext <node-id>
+scripts/send-llext.py 2_llext/extensions/hello/build/hello.llext <node-id>
 ```
 
 Drives chip-tool's generic `any command-by-id` invocation (no ZAP/codegen
@@ -211,7 +212,7 @@ the attribute calls it and returns the result. It reads as null when nothing
 is loaded or the extension has no `get_value` (e.g. `hello`).
 
 ```
-scripts/send-llext.py llext/extensions/value42/build/value42.llext <node-id>
+scripts/send-llext.py 2_llext/extensions/value42/build/value42.llext <node-id>
 out/chip-tool/chip-tool any read-by-id 0xFFF1FC01 1 <node-id> 1   # Data = 42 (signed)
 ```
 
@@ -221,10 +222,10 @@ out/chip-tool/chip-tool any read-by-id 0xFFF1FC01 1 <node-id> 1   # Data = 42 (s
 scripts/run-llext-ztest.sh
 ```
 
-builds `llext/tests/extension_value/` into `build-llext-test/` and runs it
+builds `2_llext/tests/extension_value/` into `build-llext-test/` and runs it
 under QEMU -- **no sudo, no commissioning, no chip-tool needed**. It is a
 Zephyr ztest suite that links the real `ExtensionLoaderCluster` with the
-`llext/` sample's own Kconfig/devicetree, embeds `hello`, `value42` and
+`2_llext/` sample's own Kconfig/devicetree, embeds `hello`, `value42` and
 `value1337` (built in-tree from the same sources via `add_llext_target`),
 and drives the cluster's actual `LoadStart`/`LoadChunk`/`LoadDone` and
 `ReadAttribute` handlers with TLV-encoded requests -- everything except the
@@ -245,9 +246,9 @@ against a running, commissioned `build-llext` device (so it needs
 `value42` again through chip-tool and checks that `ExtensionValue` reads back
 42 / 1337 / 42.
 
-## Extension-provided LVGL UI (`llext-lvgl/`)
+## Extension-provided LVGL UI (`3_llext_lvgl/`)
 
-Combines the two samples above: the device shows the `lvgl/` sample's bulb
+Combines the two samples above: the device shows the `1_lvgl/` sample's bulb
 widget until an extension that provides a UI is loaded through the
 `ExtensionLoaderCluster`, which then replaces it -- no rebuild or restart of
 the device. Loading another extension swaps the UI again; the new UI picks
@@ -255,13 +256,13 @@ up the bulb's current on/off + level state.
 
 | built-in | `ui_bar` | `ui_led` |
 | --- | --- | --- |
-| ![built-in arc](llext-lvgl/doc/builtin.png) | ![dimmer bar](llext-lvgl/doc/ui_bar.png) | ![lamp](llext-lvgl/doc/ui_led.png) |
+| ![built-in arc](3_llext_lvgl/doc/builtin.png) | ![dimmer bar](3_llext_lvgl/doc/ui_bar.png) | ![lamp](3_llext_lvgl/doc/ui_led.png) |
 
 (Screenshots taken by the test suite below.)
 
 ### Writing a UI extension
 
-The contract is `llext-lvgl/include/bulb_ui_extension.h`: export two
+The contract is `3_llext_lvgl/include/bulb_ui_extension.h`: export two
 functions with `LL_EXTENSION_SYMBOL`,
 
 ```c
@@ -274,7 +275,7 @@ container owned by that UI; the app deletes it, and everything in it, before
 the extension is unloaded, so there is no destroy hook.
 
 An extension can only call the LVGL functions the app exports to it, listed
-in `llext-lvgl/src/gui/LvglExports.c` (objects, local styles, colors, and
+in `3_llext_lvgl/src/gui/LvglExports.c` (objects, local styles, colors, and
 the label/arc/bar/led widgets). Calling anything else makes the load fail
 with `Undefined symbol ...` on the device console and `TransferStatus` =
 Error; add an `EXPORT_SYMBOL` line there and rebuild the app. (`static
@@ -282,7 +283,7 @@ inline` LVGL helpers such as `lv_pct()` need no entry.)
 
 ### Building and sending the UI extensions
 
-Same procedure as for `llext/` ("Building the sample extensions" above),
+Same procedure as for `2_llext/` ("Building the sample extensions" above),
 against this sample's own EDK:
 
 ```
@@ -292,9 +293,9 @@ mkdir -p /tmp/edk-lvgl && tar -xf zephyr/llext-edk.tar.xz -C /tmp/edk-lvgl
 export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1
 export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
 for ext in ui_bar ui_led; do
-  cmake -S ../llext-lvgl/extensions/$ext -B ../llext-lvgl/extensions/$ext/build \
+  cmake -S ../3_llext_lvgl/extensions/$ext -B ../3_llext_lvgl/extensions/$ext/build \
     -DLLEXT_EDK_INSTALL_DIR=/tmp/edk-lvgl/llext-edk
-  cmake --build ../llext-lvgl/extensions/$ext/build   # produces build/$ext.llext
+  cmake --build ../3_llext_lvgl/extensions/$ext/build   # produces build/$ext.llext
 done
 ```
 
@@ -302,24 +303,24 @@ With `scripts/run-qemu-macos.sh build-llext-lvgl` running and the device
 commissioned:
 
 ```
-scripts/send-llext.py llext-lvgl/extensions/ui_bar/build/ui_bar.llext <node-id>
+scripts/send-llext.py 3_llext_lvgl/extensions/ui_bar/build/ui_bar.llext <node-id>
 out/chip-tool/chip-tool onoff on <node-id> 1
 out/chip-tool/chip-tool levelcontrol move-to-level 128 0 0 0 <node-id> 1
-scripts/send-llext.py llext-lvgl/extensions/ui_led/build/ui_led.llext <node-id>
+scripts/send-llext.py 3_llext_lvgl/extensions/ui_led/build/ui_led.llext <node-id>
 ```
 
 The QEMU window switches from the arc to the dimmer bar, follows the on/off
 and level commands, then switches to the lamp. An extension without
-`ui_create`/`ui_update` (e.g. `llext/`'s `hello`) still loads; the UI then
+`ui_create`/`ui_update` (e.g. `2_llext/`'s `hello`) still loads; the UI then
 falls back to the built-in one.
 
 ### Tests
 
 ```
-scripts/run-llext-ztest.sh llext-lvgl/tests/extension_ui
+scripts/run-llext-ztest.sh 3_llext_lvgl/tests/extension_ui
 ```
 
-Like the `llext/` suite, this needs no sudo, commissioning or chip-tool, and
+Like the `2_llext/` suite, this needs no sudo, commissioning or chip-tool, and
 opens no window. It runs the real cluster, GUI thread and LVGL rendering in
 QEMU, loads `ui_bar` → `ui_led` → `ui_bar` through the cluster's command
 handlers while changing the bulb state, and finally drops the cluster to

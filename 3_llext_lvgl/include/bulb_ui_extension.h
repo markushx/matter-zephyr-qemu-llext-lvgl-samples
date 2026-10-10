@@ -1,5 +1,5 @@
 /*
- * Contract between the llext-lvgl app and a UI extension loaded through the
+ * Contract between the 3_llext_lvgl app and a UI extension loaded through the
  * ExtensionLoaderCluster. An extension that exports both functions below
  * (LL_EXTENSION_SYMBOL) replaces the app's built-in bulb widget until it is
  * unloaded or another extension is loaded.

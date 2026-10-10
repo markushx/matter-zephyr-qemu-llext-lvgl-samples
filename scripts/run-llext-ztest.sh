@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build and run one of the ExtensionLoaderCluster ztest suites under QEMU:
-#   llext/tests/extension_value     (default)
-#   llext-lvgl/tests/extension_ui
+#   2_llext/tests/extension_value     (default)
+#   3_llext_lvgl/tests/extension_ui
 #
 # Unlike run-qemu-macos.sh this needs no sudo: the suites call the cluster's
 # handlers directly, so there's no Matter traffic and QEMU's unprivileged
@@ -24,7 +24,7 @@
 # step should change the picture.
 #
 # Usage: run-llext-ztest.sh [TEST_DIR] [BUILD_DIR]
-#   TEST_DIR   relative to the repo root (default llext/tests/extension_value)
+#   TEST_DIR   relative to the repo root (default 2_llext/tests/extension_value)
 #   BUILD_DIR  default build-<sample>-test, e.g. build-llext-test
 # Env: CHIP_ROOT (default ~/src/connectedhomeip-worktree-zephyr), WEST
 #      (default ~/src/zephyrproject/zephyr/.venv/bin/west), TIMEOUT (seconds
@@ -32,9 +32,13 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_DIR="${1:-llext/tests/extension_value}"
+TEST_DIR="${1:-2_llext/tests/extension_value}"
 TEST_DIR="${TEST_DIR%/}"
-BUILD_DIR="${2:-$REPO_ROOT/build-${TEST_DIR%%/*}-test}"
+# Build directories are named after the sample without its number prefix:
+# 3_llext_lvgl -> build-llext-lvgl-test.
+SAMPLE="${TEST_DIR%%/*}"
+SAMPLE="${SAMPLE#[0-9]_}"
+BUILD_DIR="${2:-$REPO_ROOT/build-${SAMPLE//_/-}-test}"
 CHIP_ROOT="${CHIP_ROOT:-$HOME/src/connectedhomeip-worktree-zephyr}"
 WEST="${WEST:-$HOME/src/zephyrproject/zephyr/.venv/bin/west}"
 TIMEOUT="${TIMEOUT:-120}"
