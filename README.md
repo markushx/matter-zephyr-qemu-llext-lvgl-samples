@@ -2,10 +2,7 @@
 
 A commissionable Matter (project-chip/connectedhomeip) light bulb running on
 Zephyr RTOS in QEMU (`qemu_x86`), commissioned over real Ethernet (no
-BLE/Thread/Wi-Fi). See `plan/plan.md` and `plan/plan-detailed.md` for the
-full design, milestones, and a retrospective of every real bug found getting
-here (crypto backend, GN toolchain, SYS_INIT ordering, PCI IRQ routing,
-etc.) — worth reading before touching the build if something breaks.
+BLE/Thread/Wi-Fi).
 
 ## Samples
 
@@ -43,16 +40,61 @@ automatically by `west build`, no `-DEXTRA_DTC_OVERLAY_FILE` needed.
 
 - Zephyr workspace at `~/src/zephyrproject` (west installed, `qemu_x86`
   board support present).
-- A `connectedhomeip` checkout/worktree at
-  `~/src/connectedhomeip-worktree-zephyr`, bootstrapped (its `.environment/`
-  present). Each sample's `CMakeLists.txt` defaults `CHIP_ROOT` to this
-  path; override with `-DCHIP_ROOT=...` if yours lives elsewhere.
-- `zap-cli` on `PATH` for data-model codegen (see
-  `.environment/extra-cipd/zap` under the CHIP checkout if you followed the
-  same bootstrap as this project).
+- A `connectedhomeip` checkout of the
+  [`zephyr-qemu-matter`](https://github.com/markushx/connectedhomeip/tree/zephyr-qemu-matter)
+  branch at `~/src/connectedhomeip-worktree-zephyr`, bootstrapped -- see
+  "Getting connectedhomeip" below.
+- `zap-cli` on `PATH` for data-model codegen.
 - QEMU with vmnet support (Homebrew's `qemu` formula has it).
 - `chip-tool` built from the same CHIP checkout
   (`out/chip-tool/chip-tool`) for commissioning/control from the host.
+
+### Getting connectedhomeip
+
+Upstream `connectedhomeip` does not build and boot for `qemu_x86` as it is.
+The samples need the
+[`zephyr-qemu-matter`](https://github.com/markushx/connectedhomeip/tree/zephyr-qemu-matter)
+branch of `markushx/connectedhomeip`, which is upstream `master` plus one
+commit with four fixes:
+
+- `config/zephyr/chip-module/CMakeLists.txt`: set GN's `target_cpu` for
+  `qemu_x86`/`qemu_x86_64`, so the build doesn't fall back to the host CPU
+  (arm64 on Apple Silicon) and pull in ARM-only flags.
+- `src/platform/Zephyr/SysHeapMalloc.cpp`: initialize CHIP's heap before
+  Zephyr's mbedTLS init hook, which allocates from it; otherwise the device
+  can crash during boot.
+- `build/chip/chip_codegen.cmake`: run codegen with the CHIP bootstrap
+  environment's Python instead of the one Zephyr's CMake found.
+- `scripts/setup/environment_no_cipd.json`: drop the `"rosetta": "never"`
+  setting.
+
+```
+git clone --branch zephyr-qemu-matter https://github.com/markushx/connectedhomeip.git \
+  ~/src/connectedhomeip-worktree-zephyr
+cd ~/src/connectedhomeip-worktree-zephyr
+python3 scripts/checkout_submodules.py --shallow --platform zephyr
+source scripts/bootstrap.sh
+scripts/examples/gn_build_example.sh examples/chip-tool out/chip-tool
+```
+
+(Add `--platform darwin` or `linux` to the `checkout_submodules.py` call,
+matching your host, if the chip-tool build then misses a submodule.) In an
+existing `connectedhomeip` clone, a second worktree works just as well:
+`git remote add markushx https://github.com/markushx/connectedhomeip.git &&
+git fetch markushx zephyr-qemu-matter && git worktree add
+~/src/connectedhomeip-worktree-zephyr markushx/zephyr-qemu-matter`.
+
+Each sample's `CMakeLists.txt` defaults `CHIP_ROOT` to
+`~/src/connectedhomeip-worktree-zephyr`; override with `-DCHIP_ROOT=...` (or
+the `CHIP_ROOT` environment variable) if yours lives elsewhere.
+
+`bootstrap.sh` is only needed once; later shells just source
+`.environment/activate.sh` (see "Build"). The bootstrap does not put
+`zap-cli` on `PATH`: install the ZAP release named in the checkout's
+`scripts/setup/zap.version` (`v2026.08.24` for this branch) from
+<https://github.com/project-chip/zap/releases> and add its directory to
+`PATH`. The commands in this README assume it is in
+`~/src/connectedhomeip-worktree-zephyr/.environment/extra-cipd/zap`.
 
 ## Build
 
@@ -137,6 +179,14 @@ scripts/run-qemu-macos.sh
 An LVGL widget (a yellow/grey arc + ON/OFF label, `1_lvgl/src/gui/BulbUi.cpp`)
 reflects the Matter on/off + level state in a QEMU window, instead of only
 the console log.
+
+| off | on, 100 % |
+| --- | --- |
+| ![bulb widget, off](docs/images/lvgl-bulb-off.png) | ![bulb widget, on at 100 %](docs/images/lvgl-bulb-on.png) |
+
+(QEMU screendumps taken by the `3_llext_lvgl/` test suite, whose built-in
+UI is a copy of this widget; `1_lvgl/` has no automated screenshots of its
+own.)
 
 `1_lvgl/boards/qemu_x86.overlay` shrinks the declared `dram0`/`zephyr,sram`
 size to exclude the top 4 MiB the board reserves for the ramfb framebuffer
@@ -262,7 +312,7 @@ up the bulb's current on/off + level state.
 
 | built-in | `ui_bar` | `ui_led` |
 | --- | --- | --- |
-| ![built-in arc](3_llext_lvgl/doc/builtin.png) | ![dimmer bar](3_llext_lvgl/doc/ui_bar.png) | ![lamp](3_llext_lvgl/doc/ui_led.png) |
+| ![built-in arc](docs/images/llext-lvgl-builtin.png) | ![dimmer bar](docs/images/llext-lvgl-ui-bar.png) | ![lamp](docs/images/llext-lvgl-ui-led.png) |
 
 (Screenshots taken by the test suite below.)
 
