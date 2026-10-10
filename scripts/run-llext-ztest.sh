@@ -2,6 +2,7 @@
 # Build and run one of the ExtensionLoaderCluster ztest suites under QEMU:
 #   2_llext/tests/extension_value     (default)
 #   3_llext_lvgl/tests/extension_ui
+#   4_llext_dynamic/tests/dynamic_endpoints
 #
 # Unlike run-qemu-macos.sh this needs no sudo: the suites call the cluster's
 # handlers directly, so there's no Matter traffic and QEMU's unprivileged
@@ -51,6 +52,15 @@ set +u
 source "$CHIP_ROOT/.environment/activate.sh" >/dev/null 2>&1
 set -u
 export CHIP_ROOT
+# zap-cli, for suites that build a data model (4_llext_dynamic); see README.md.
+export PATH="$CHIP_ROOT/.environment/extra-cipd/zap:$PATH"
+
+# Zephyr's add_llext_target() makes the step that turns an extension's object
+# file into its .llext depend on the compile *target* only, not on the object
+# file itself, so after editing an extension's source the object is rebuilt
+# but the embedded .llext is not: the suite would run against the old
+# extension. Dropping the packaged extensions forces that step to rerun.
+rm -rf "$BUILD_DIR/llext"
 
 # west build must run from inside the Zephyr workspace.
 (cd "$(dirname "$WEST")/../../.." && "$WEST" build -b qemu_x86 "$REPO_ROOT/$TEST_DIR" -d "$BUILD_DIR") || exit 1

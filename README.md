@@ -9,7 +9,7 @@ etc.) — worth reading before touching the build if something breaks.
 
 ## Samples
 
-Three independent, self-contained Zephyr applications, each buildable on its
+Five independent, self-contained Zephyr applications, each buildable on its
 own with no extra CLI flags:
 
 - **[`0_plain/`](0_plain/)** — the base light bulb: on/off + level control,
@@ -28,6 +28,11 @@ own with no extra CLI flags:
   extension loaded over Matter *is* the bulb's LVGL UI. Includes two UI
   extensions (`3_llext_lvgl/extensions/ui_bar/`, `ui_led/`) and a ztest suite
   that screenshots them (`3_llext_lvgl/tests/extension_ui/`).
+- **[`4_llext_dynamic/`](4_llext_dynamic/)** — a Matter bridge whose bridged
+  devices arrive as extensions: a loaded extension adds its own endpoints,
+  clusters, attributes and command handlers at runtime. Three sample
+  extensions (`4_llext_dynamic/extensions/onoff_light/`, `temp_sensor/`,
+  `counter/`) and a ztest suite (`4_llext_dynamic/tests/dynamic_endpoints/`).
 
 Each sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
@@ -59,8 +64,9 @@ export PATH="~/src/connectedhomeip-worktree-zephyr/.environment/extra-cipd/zap:$
   ~/src/matter-zephyr-qemu/0_plain -d ~/src/matter-zephyr-qemu/build-plain
 ```
 
-Swap `0_plain` for `1_lvgl`, `2_llext` or `3_llext_lvgl` (and `build-plain` for
-`build-lvgl` / `build-llext` / `build-llext-lvgl` — build directories are
+Swap `0_plain` for `1_lvgl`, `2_llext`, `3_llext_lvgl` or `4_llext_dynamic` (and
+`build-plain` for `build-lvgl` / `build-llext` / `build-llext-lvgl` /
+`build-llext-dynamic` — build directories are
 named without the number prefix) to build one of the other
 samples — each needs its own build
 directory since their Kconfig differs, but the command is otherwise
@@ -79,7 +85,7 @@ run it.)
 ## Run
 
 ```
-scripts/run-qemu-macos.sh [build-plain|build-lvgl|build-llext|build-llext-lvgl]
+scripts/run-qemu-macos.sh [build-plain|build-lvgl|build-llext|build-llext-lvgl|build-llext-dynamic]
 ```
 
 Defaults to `build-plain`. Requires `sudo` (vmnet needs root) — run it
@@ -329,6 +335,120 @@ screendump to `build-llext-lvgl-test/screenshots/<step>.png`. Besides
 ztest's own verdict, the run fails if a screenshot is missing or if any two
 are identical -- every step is supposed to change the picture. Look at the
 PNGs to judge the UIs themselves.
+
+## Extension-provided Matter endpoints (`4_llext_dynamic/`)
+
+A Matter bridge, modelled on connectedhomeip's
+[`examples/bridge-app/linux`](https://github.com/project-chip/connectedhomeip/tree/master/examples/bridge-app/linux)
+and nRF Connect's
+[bridge sample](https://github.com/nrfconnect/ncs-matter/tree/main/samples/bridge)
+-- except that the bridged devices are not compiled into the app. Each one
+is an LLEXT extension, sent to the running device through the
+`ExtensionLoaderCluster`, that describes its endpoint and implements its
+behaviour:
+
+| What the extension provides | How |
+|---|---|
+| Endpoints | `matter_dyn_endpoint_add()` with a device type and a name; shows up as a bridged node below the Aggregator (endpoint 1) |
+| Clusters | a table per endpoint: standard ones, or manufacturer-specific ones the app has never heard of |
+| Attributes | a table per cluster (ID, type, writable/nullable) plus `read`/`write` callbacks |
+| Command servers | a list of accepted command IDs plus an `invoke` callback that gets the decoded command fields |
+
+The contract is `4_llext_dynamic/include/matter_dynamic_extension.h`. On the
+app side, `src/dynamic/DynamicEndpointManager.cpp` turns those tables into
+Ember dynamic endpoints at runtime -- what `bridge-app` declares at compile
+time with its `DECLARE_DYNAMIC_*` macros -- with external attribute storage
+routed to the extension, and adds the Descriptor and Bridged Device Basic
+Information clusters every bridged node needs. The data model is
+`bridge-app`'s (`bridge-app.zap`): root node on endpoint 0, Aggregator on
+endpoint 1; there is no light bulb in this sample.
+
+Unlike in the two previous samples, up to four extensions can be loaded side
+by side. A successful load goes into the lowest free slot; the cluster's new
+`Unload` command (ID 3, field 0 = slot) removes an extension again, together
+with every endpoint it added. Attribute 2, `LoadedExtensions`, is a bitmap of
+the slots in use. Up to 8 dynamic endpoints exist in total
+(`CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT`).
+
+The three sample extensions:
+
+- `onoff_light` -- an On/Off Light (device type 0x0100). It only stores the
+  `OnOff` attribute; the On/Off/Toggle commands are handled by the SDK's own
+  On/Off cluster server, which writes the attribute.
+- `temp_sensor` -- a Temperature Sensor (0x0302) with a simulated reading:
+  its `poll()` function, called by the app about once per second, moves the
+  temperature between 20 and 25 °C and reports the change.
+- `counter` -- a manufacturer-specific cluster `0xFFF1FC02` with a read-only
+  `Count`, a writable `Step` (1..100, enforced by the extension) and two
+  commands, `Increment` (optional field 0: amount) and `Reset`, all
+  implemented in the extension.
+
+All calls into an extension happen on the Matter thread, and unloading
+removes its endpoints first, so an extension needs neither locking nor a
+cleanup hook.
+
+### Building and sending the extensions
+
+Build the app like the other samples (`4_llext_dynamic` →
+`build-llext-dynamic`), then the extensions against its EDK:
+
+```
+cd build-llext-dynamic
+cmake --build . --target llext-edk
+mkdir -p /tmp/edk-dynamic && tar -xf zephyr/llext-edk.tar.xz -C /tmp/edk-dynamic
+export ZEPHYR_SDK_INSTALL_DIR=~/zephyr-sdk-1.0.1
+export PATH="$ZEPHYR_SDK_INSTALL_DIR/gnu/x86_64-zephyr-elf/bin:$PATH"
+for ext in onoff_light temp_sensor counter; do
+  cmake -S ../4_llext_dynamic/extensions/$ext -B ../4_llext_dynamic/extensions/$ext/build \
+    -DLLEXT_EDK_INSTALL_DIR=/tmp/edk-dynamic/llext-edk
+  cmake --build ../4_llext_dynamic/extensions/$ext/build   # produces build/$ext.llext
+done
+```
+
+With `scripts/run-qemu-macos.sh build-llext-dynamic` running and the device
+commissioned (it is a different device than the other samples -- commission
+it afresh, its `persistent.img` starts empty):
+
+```
+# Endpoint 3 appears: an on/off light
+scripts/send-llext.py 4_llext_dynamic/extensions/onoff_light/build/onoff_light.llext <node-id>
+out/chip-tool/chip-tool descriptor read parts-list <node-id> 1
+out/chip-tool/chip-tool onoff toggle <node-id> 3
+out/chip-tool/chip-tool onoff read on-off <node-id> 3
+
+# Endpoint 4: a temperature sensor whose value moves by itself
+scripts/send-llext.py 4_llext_dynamic/extensions/temp_sensor/build/temp_sensor.llext <node-id>
+out/chip-tool/chip-tool temperaturemeasurement read measured-value <node-id> 4
+
+# Endpoint 5: the custom Counter cluster -- Increment, Increment by 10, read Count
+scripts/send-llext.py 4_llext_dynamic/extensions/counter/build/counter.llext <node-id>
+out/chip-tool/chip-tool any command-by-id 0xFFF1FC02 0 '{}' <node-id> 5
+out/chip-tool/chip-tool any command-by-id 0xFFF1FC02 0 '{"0": 10}' <node-id> 5
+out/chip-tool/chip-tool any read-by-id 0xFFF1FC02 0 <node-id> 5
+
+# Unload slot 1 (the temperature sensor): endpoint 4 disappears
+out/chip-tool/chip-tool any command-by-id 0xFFF1FC01 3 '{"0": 1}' <node-id> 1
+out/chip-tool/chip-tool descriptor read parts-list <node-id> 1
+```
+
+Endpoint IDs are handed out in order starting at 3 (0-2 belong to the data
+model) and are not reused while the device is running, so the numbers above
+only hold for a fresh boot. Loaded extensions are not persisted: after a
+restart the bridge is empty again.
+
+### Tests
+
+```
+scripts/run-llext-ztest.sh 4_llext_dynamic/tests/dynamic_endpoints
+```
+
+Unlike the two suites above, this one boots the sample's whole Matter server
+inside QEMU (still no sudo, commissioning or chip-tool), loads the three
+extensions through the loader cluster and then acts as the controller: it
+reads, writes and invokes on the new endpoints through the data model
+provider, the layer directly below the Interaction Model engine. It checks
+each extension's behaviour, several extensions side by side, and that
+unloading one removes exactly its endpoint.
 
 ## Debugging tools
 

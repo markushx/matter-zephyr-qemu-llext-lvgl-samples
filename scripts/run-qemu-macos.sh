@@ -6,7 +6,7 @@
 # vmnet requires root, hence the sudo. Requires QEMU built with vmnet support
 # (Homebrew's qemu formula has it).
 #
-# Every sample (0_plain/, 1_lvgl/, 2_llext/, 3_llext_lvgl/) builds with persistent storage
+# Every sample (0_plain/, 1_lvgl/, 2_llext/, 3_llext_lvgl/, 4_llext_dynamic/) builds with persistent storage
 # baked in (see each sample's prj.conf + boards/qemu_x86.overlay), so this
 # always attaches a virtio-blk disk backed by a real host file -- CHIP's
 # Settings storage (fabrics, ACLs, session resumption, etc.) survives QEMU

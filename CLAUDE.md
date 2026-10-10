@@ -52,7 +52,13 @@ about *how to work here*, not what the project is.
   `build-llext-lvgl-test/screenshots/*.png` -- Read those to actually see
   what LVGL rendered; the script itself only checks they all differ. Run it
   after touching `3_llext_lvgl/src/` or `3_llext_lvgl/extensions/`.
-  Anything that needs real Matter traffic (commissioning, chip-tool) still
+- `scripts/run-llext-ztest.sh 4_llext_dynamic/tests/dynamic_endpoints` boots
+  the `4_llext_dynamic/` sample's whole Matter server in QEMU and drives the
+  endpoints its extensions add through the data model provider (reads,
+  writes, invokes). Run it after touching `4_llext_dynamic/src/`,
+  `4_llext_dynamic/include/` or `4_llext_dynamic/extensions/`. It builds its
+  own copy of the CHIP library, so the first run takes several minutes.
+- Anything that needs real Matter traffic (commissioning, chip-tool) still
   needs the user to run `run-qemu-macos.sh`.
 
 ## Boot/QEMU debugging
