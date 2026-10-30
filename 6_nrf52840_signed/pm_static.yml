@@ -1,0 +1,16 @@
+# Pinned, so that changing the extension storage can't move the settings: that
+# would lose the commissioning (see "Porting notes" in the README).
+#
+# The default for settings is 8 KiB, which runs out once a second fabric is added
+# (PSA error -142 while committing it). 32 KiB is what Nordic's static partition
+# maps use.
+extension_storage:
+  address: 0xf4000
+  end_address: 0xf8000
+  region: flash_primary
+  size: 0x4000
+settings_storage:
+  address: 0xf8000
+  end_address: 0x100000
+  region: flash_primary
+  size: 0x8000

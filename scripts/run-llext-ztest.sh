@@ -3,6 +3,7 @@
 #   2_llext/tests/extension_value     (default)
 #   3_llext_lvgl/tests/extension_ui
 #   4_llext_dynamic/tests/dynamic_endpoints
+#   6_nrf52840_signed/tests/signature
 #
 # Unlike run-qemu-macos.sh this needs no sudo: the suites call the cluster's
 # handlers directly, so there's no Matter traffic and QEMU's unprivileged

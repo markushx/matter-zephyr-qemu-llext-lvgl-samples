@@ -58,6 +58,12 @@ about *how to work here*, not what the project is.
   writes, invokes). Run it after touching `4_llext_dynamic/src/`,
   `4_llext_dynamic/include/` or `4_llext_dynamic/extensions/`. It builds its
   own copy of the CHIP library, so the first run takes several minutes.
+- `scripts/run-llext-ztest.sh 6_nrf52840_signed/tests/signature` checks
+  `ExtensionSignature` with CHIP's real crypto. Run it after touching that file or
+  `scripts/sign-llext.py`; after changing the image format, regenerate
+  `src/test_images.h` with `generate_test_images.py` next to it.
+- From a `.claude/worktrees/` checkout, pass a short BUILD_DIR as the script's second
+  argument: QEMU's monitor socket path otherwise exceeds macOS's 104-byte limit.
 - Anything that needs real Matter traffic (commissioning, chip-tool) still
   needs the user to run `run-qemu-macos.sh`.
 
@@ -84,6 +90,10 @@ above doesn't apply here. Don't modify `/opt/nordic/ncs/`.
   capture the UART, so unlike QEMU this needs no help from the user. Commissioning does.
 - The server's `read_attribute` and `get_node` are safe to use for checks. Use a node ID
   that doesn't exist to probe `device_command` behaviour without touching a device.
+
+`6_nrf52840_signed/` builds the same way and all of the above applies to it. Its signing
+key is `~/.config/matter-zephyr-qemu/extension-signing.pem`: never commit it, print it or
+regenerate it without asking, as firmware and signed extensions depend on it.
 
 ## Boot/QEMU debugging
 
