@@ -6,7 +6,7 @@ BLE/Thread/Wi-Fi).
 
 ## Samples
 
-Five independent, self-contained Zephyr applications, each buildable on its
+Six independent, self-contained Zephyr applications, each buildable on its
 own with no extra CLI flags:
 
 - **[`0_plain/`](0_plain/)** — the base light bulb: on/off + level control,
@@ -30,8 +30,13 @@ own with no extra CLI flags:
   clusters, attributes and command handlers at runtime. Three sample
   extensions (`4_llext_dynamic/extensions/onoff_light/`, `temp_sensor/`,
   `counter/`) and a ztest suite (`4_llext_dynamic/tests/dynamic_endpoints/`).
+- **[`5_nrf52840_thread/`](5_nrf52840_thread/)** — `4_llext_dynamic/` on real
+  hardware: an nRF52840 DK with Matter over Thread and BLE commissioning, built
+  with nRF Connect SDK v3.2.0 and optimized for flash space. Unlike the others
+  it does not use the `connectedhomeip` worktree or `qemu_x86`; see
+  [its section](#matter-over-thread-on-the-nrf52840-dk-5_nrf52840_thread).
 
-Each sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
+Each QEMU sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
 Zephyr's auto-detected board-devicetree-overlay convention — it's picked up
 automatically by `west build`, no `-DEXTRA_DTC_OVERLAY_FILE` needed.
@@ -499,6 +504,118 @@ reads, writes and invokes on the new endpoints through the data model
 provider, the layer directly below the Interaction Model engine. It checks
 each extension's behaviour, several extensions side by side, and that
 unloading one removes exactly its endpoint.
+
+## Matter over Thread on the nRF52840 DK (`5_nrf52840_thread/`)
+
+The same extension loader and dynamic endpoints as `4_llext_dynamic/`, on an
+nRF52840 DK. Differences from the QEMU sample:
+
+- **SDK:** nRF Connect SDK v3.2.0 and its Matter fork, with Nordic's `Nrf::Matter`
+  init and Thread driver, and Nordic's `matter_bridge` data model.
+- **Flash:** no MCUboot, OTA or factory data, no shell, no logging, LTO on. It uses
+  590 KB of 992 KB flash and 195 KB of 256 KB RAM. There are **no firmware updates
+  over the air**; flash with J-Link. `logging.conf` adds a UART console (657 KB).
+- **Credentials:** the SDK's test DAC and the default test pairing code
+  (20202021 / 3840, manual code `34970112332`). A matterjs-server only accepts this
+  with `--enable-test-net-dcl`.
+- **Limits:** two extensions at a time, 8 KiB each, four dynamic endpoints.
+- **Extensions don't survive a reboot:** they live in RAM, so send them again after
+  a restart. Their endpoints disappear until then.
+- **Memory protection:** `CONFIG_ARM_MPU=n`, because extensions run from RAM. That
+  also means no stack guards.
+
+### Building
+
+```sh
+T=/opt/nordic/ncs/toolchains/322ac893fe    # the toolchain of NCS v3.2.0
+export PATH="$T/bin:$T/opt/bin:$T/nrfutil/bin:$T/opt/zephyr-sdk/arm-zephyr-eabi/bin:$PATH"
+export ZEPHYR_TOOLCHAIN_VARIANT=zephyr ZEPHYR_SDK_INSTALL_DIR=$T/opt/zephyr-sdk
+export ZEPHYR_BASE=/opt/nordic/ncs/v3.2.0/zephyr
+R=$PWD
+
+# Add -- -D5_nrf52840_thread_EXTRA_CONF_FILE=$R/5_nrf52840_thread/logging.conf for logs.
+west build -b nrf52840dk/nrf52840 --sysbuild -d build-nrf-thread 5_nrf52840_thread
+nrfjprog --family NRF52 --program build-nrf-thread/merged.hex --chiperase --verify --reset
+
+# Extensions (cmake >= 3.28, so not the NCS toolchain's own).
+ninja -C build-nrf-thread/5_nrf52840_thread llext-edk
+mkdir -p /tmp/edk-nrf && tar -xf build-nrf-thread/5_nrf52840_thread/zephyr/llext-edk.tar.xz -C /tmp/edk-nrf
+cd 5_nrf52840_thread/extensions/counter
+/opt/homebrew/bin/cmake -B build -DLLEXT_EDK_INSTALL_DIR=/tmp/edk-nrf/llext-edk
+/opt/homebrew/bin/cmake --build build
+```
+
+### Commissioning
+
+Connect to the DK's UART (first of its two serial ports, 115200 baud) to see the
+log of a `logging.conf` build. The device advertises over BLE after a reset, with
+manual pairing code `34970112332` or QR code `MT:6FCJ142C00KA0648G00`. Commission
+it from a phone, for example with the Home Assistant Companion app, or from any
+controller with Bluetooth and the Thread network's credentials. Home Assistant's
+Matter server must have `--enable-test-net-dcl` set, or it rejects the test DAC.
+
+Button 1 on the DK is handled by Nordic's common board code, but this sample's
+factory reset hasn't been tried. To start over, erase the whole chip by flashing
+with `--chiperase`. To update the firmware and keep the commissioning, flash with
+`--sectorerase` instead; the image doesn't cover the settings partition.
+
+### Sending an extension through a matterjs-server
+
+matterjs-server rejects commands on a cluster it has no definition for
+(`Cluster Id "4294048769" unknown`), and definitions are compiled in. To leave the
+server unchanged, make `chip-tool` a second admin. The server then picks up the new
+endpoints on its own and can control them, because they use standard clusters:
+
+```sh
+scripts/matterjs-share-node.mjs ws://<server>:5580/ws <server-node-id> <chip-tool-node-id>
+scripts/send-llext.py 5_nrf52840_thread/extensions/counter/build/counter.llext <chip-tool-node-id>
+```
+
+For a server you run yourself, `5_nrf52840_thread/matterjs/extension-loader.ts` is
+the cluster definition for its `custom-clusters` package, after which
+`device_command` works with `loadStart`, `loadChunk`, `loadDone` and `unload`. This
+file hasn't been compiled or run yet. Reads of the cluster work on any server, here
+`LoadedExtensions` and `TransferStatus`:
+
+```json
+{"command": "read_attribute", "args": {"node_id": 9, "attribute_path": "1/4294048769/2"}}
+{"command": "read_attribute", "args": {"node_id": 9, "attribute_path": "1/4294048769/0"}}
+```
+
+Tested end to end against matterjs-server 1.4.0 (matter.js 0.17.9) on a live Thread
+network: `onoff_light` sent with the commands above became endpoint 3, the server
+listed it in the Aggregator's parts list without being told, and read and toggled it
+with `device_command`. How the Home Assistant UI presents such an endpoint hasn't been
+checked.
+
+### Porting notes
+
+What differed from `4_llext_dynamic/`, in case this is moved to another board or SDK:
+
+- **LLEXT and LTO don't link together**: `syscall_exports_llext.c` and
+  `syscall_weakdefs_llext.c` declare every syscall implementation as a variable ("function
+  redeclared as variable"). `CMakeLists.txt` excludes those two files from LTO.
+- **The EDK passes `-flto` on to extensions**, which would then contain no machine code.
+  Their `CMakeLists.txt` adds `-fno-lto` after the EDK's flags.
+- **`zephyr/kernel.h` doesn't compile from an NCS EDK on nRF52**: it reaches a private
+  802.15.4 driver header that the EDK doesn't export. Extensions include `sys/printk.h`
+  and `sys/util.h` instead.
+- **`CONFIG_CHIP_OTA_REQUESTOR=n` in `prj.conf` has no effect**: sysbuild overrides it.
+  Set `SB_CONFIG_MATTER_OTA=n` in `sysbuild.conf`.
+- **Bridged Device Basic Information is Ember-based in this SDK**, so
+  `DynamicEndpointManager` declares its attributes on each endpoint and answers them from
+  the external read callback, instead of registering a cluster class.
+- **Settings storage must be set explicitly.** Without Nordic's static partition map it
+  defaults to 8 KiB, of which NVS can use one 4 KiB sector. That was full with two fabrics,
+  and adding a third failed at the last commissioning step with `PSA error -142`.
+- **Resizing the settings partition loses the commissioning**, even though the data stays on
+  flash: it grows downward, so the old sector is no longer first, and NVS starts over at the
+  new first sector. To keep it, copy the old sector to the new start of the partition and
+  erase the original (NVS offsets are relative to the sector). Going from 8 to 32 KiB this
+  meant copying `0xFE000-0xFEFFF` to `0xF8000`, which brought both fabrics back.
+- **`bridge.zap` is Nordic's, unmodified.** It still declares OTA Requestor and Wi-Fi
+  diagnostics, and its placeholder endpoint has clusters no extension here uses. Trimming them
+  needs a ZAP regeneration and would save more flash.
 
 ## Debugging tools
 
