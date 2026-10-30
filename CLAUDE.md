@@ -71,7 +71,15 @@ above doesn't apply here. Don't modify `/opt/nordic/ncs/`.
 - The DK and its Thread network are real, and it may be commissioned on the user's
   Home Assistant. **Flash with `--sectorerase` to keep the commissioning**; `--chiperase`
   wipes it. Before changing the settings partition's size, read the porting notes in
-  README.md: a resize loses the commissioning unless the data is moved.
+  README.md: a resize loses the commissioning unless the data is moved. Partitions are
+  pinned in `pm_static.yml`.
+- Extensions on the DK are stored and restored at boot. A test extension that crashes
+  gets disabled after 3 boots but should still be unloaded afterwards, and flashing any
+  other firmware disables what is stored. Three reboots within 60 s of each other also
+  disable healthy extensions, so space out reboots during tests.
+- Attaching with `nrfjprog` can reset the running device through its watchdog. After any
+  reboot, allow up to two minutes before Matter commands work again. Matter's `BootReason`
+  (`0/51/4`) says why it rebooted; the `RESETREAS` register reads 0, the firmware clears it.
 - `nrfjprog` works from the Bash tool, and pyserial in the NCS toolchain's Python can
   capture the UART, so unlike QEMU this needs no help from the user. Commissioning does.
 - The server's `read_attribute` and `get_node` are safe to use for checks. Use a node ID

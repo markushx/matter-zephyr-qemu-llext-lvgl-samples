@@ -11,12 +11,12 @@
 #include <app/util/attribute-storage.h>
 #include <app/util/endpoint-config-api.h>
 #include <app/util/endpoint-config-defines.h>
-#include <crypto/RandUtils.h>
 #include <data-model-providers/codegen/CodegenDataModelProvider.h>
 #include <lib/core/TLV.h>
 #include <lib/support/CodeUtils.h>
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceConfig.h>
+#include <platform/KeyValueStoreManager.h>
 
 #include <cerrno>
 #include <cstdio>
@@ -222,8 +222,13 @@ struct Entry
 
 Entry sEntries[CHIP_DEVICE_CONFIG_DYNAMIC_ENDPOINT_COUNT];
 const void * sCurrentOwner = nullptr;
+uint32_t sCurrentUniqueIdSeed = 0;
+Span<const EndpointId> sRestoredEndpoints;
 EndpointId sFirstDynamicEndpointId;
 EndpointId sNextEndpointId;
+
+// Persisted so that an ID isn't given to another device after a reboot.
+constexpr char kNextEndpointIdKey[] = "llext/next-ep";
 
 Entry * FindEntry(EndpointId endpoint)
 {
@@ -391,13 +396,44 @@ void Init()
     // not a real device, so hide it.
     EndpointId lastFixedEndpoint = emberAfEndpointFromIndex(static_cast<uint16_t>(emberAfFixedEndpointCount() - 1));
     sFirstDynamicEndpointId      = static_cast<EndpointId>(lastFixedEndpoint + 1);
-    sNextEndpointId              = sFirstDynamicEndpointId;
     emberAfEndpointEnableDisable(lastFixedEndpoint, false);
+
+    CHIP_ERROR err = DeviceLayer::PersistedStorage::KeyValueStoreMgr().Get(kNextEndpointIdKey, &sNextEndpointId);
+    if (err != CHIP_NO_ERROR || sNextEndpointId < sFirstDynamicEndpointId)
+    {
+        sNextEndpointId = sFirstDynamicEndpointId;
+    }
 }
 
-void SetCurrentOwner(const void * owner)
+void SetCurrentOwner(const void * owner, uint32_t uniqueIdSeed)
 {
-    sCurrentOwner = owner;
+    sCurrentOwner        = owner;
+    sCurrentUniqueIdSeed = uniqueIdSeed;
+    sRestoredEndpoints   = {};
+}
+
+void SetRestoredEndpoints(Span<const EndpointId> endpoints)
+{
+    sRestoredEndpoints = endpoints;
+}
+
+size_t GetEndpoints(const void * owner, EndpointId * endpoints, size_t maxEndpoints)
+{
+    size_t count = 0;
+    for (const Entry & entry : sEntries)
+    {
+        if (entry.description == nullptr || entry.owner != owner || count == maxEndpoints)
+        {
+            continue;
+        }
+        size_t position = count++;
+        for (; position > 0 && endpoints[position - 1] > entry.id; position--)
+        {
+            endpoints[position] = endpoints[position - 1];
+        }
+        endpoints[position] = entry.id;
+    }
+    return count;
 }
 
 void RemoveAll(const void * owner)
@@ -439,13 +475,25 @@ int Add(const matter_dyn_endpoint * description)
 
     // Same endpoint ID allocation as bridge-app: keep counting up, skipping
     // IDs that are still in use, and never reuse the fixed endpoints' range.
+    // Only a restored endpoint takes the ID it had before.
     CHIP_ERROR err;
+    bool allocatedId = false;
     while (true)
     {
-        EndpointId candidate = sNextEndpointId;
-        if (++sNextEndpointId < sFirstDynamicEndpointId)
+        EndpointId candidate;
+        if (!sRestoredEndpoints.empty())
         {
-            sNextEndpointId = sFirstDynamicEndpointId;
+            candidate          = sRestoredEndpoints.front();
+            sRestoredEndpoints = sRestoredEndpoints.SubSpan(1);
+        }
+        else
+        {
+            candidate = sNextEndpointId;
+            if (++sNextEndpointId < sFirstDynamicEndpointId)
+            {
+                sNextEndpointId = sFirstDynamicEndpointId;
+            }
+            allocatedId = true;
         }
         err = emberAfSetDynamicEndpoint(index, candidate, &entry.endpointType,
                                         Span<DataVersion>(entry.dataVersions.data(), entry.dataVersions.size()),
@@ -461,6 +509,10 @@ int Add(const matter_dyn_endpoint * description)
             Release(index);
             return -ENOMEM;
         }
+    }
+    if (allocatedId)
+    {
+        LogErrorOnFailure(DeviceLayer::PersistedStorage::KeyValueStoreMgr().Put(kNextEndpointIdKey, sNextEndpointId));
     }
 
     // For some standard clusters the SDK has a server of its own that keeps
@@ -482,7 +534,7 @@ int Add(const matter_dyn_endpoint * description)
         }
     }
 
-    snprintf(entry.uniqueId, sizeof(entry.uniqueId), "LLEXT-%04X-%08lX", entry.id, static_cast<unsigned long>(Crypto::GetRandU32()));
+    snprintf(entry.uniqueId, sizeof(entry.uniqueId), "LLEXT-%04X-%08lX", entry.id, static_cast<unsigned long>(sCurrentUniqueIdSeed));
 
     for (uint8_t i = 0; i < description->cluster_count; i++)
     {

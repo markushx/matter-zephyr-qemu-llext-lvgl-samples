@@ -38,6 +38,10 @@ export class ExtensionLoaderCluster {
     @attribute(0x0002, map8)
     loadedExtensions?: number;
 
+    /** Bit N is set if slot N has a stored extension that wasn't restored at boot. */
+    @attribute(0x0003, map8)
+    disabledExtensions?: number;
+
     @command(0x00, LoadStartRequest)
     loadStart(_request: LoadStartRequest): void {}
 

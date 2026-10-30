@@ -21,6 +21,7 @@ target_sources(app PRIVATE
     src/dynamic/DynamicEndpointManager.cpp
     src/dynamic/DynamicExports.c
     src/llext/ExtensionLoaderCluster.cpp
+    src/llext/ExtensionStore.cpp
 )
 
 ncs_configure_data_model()

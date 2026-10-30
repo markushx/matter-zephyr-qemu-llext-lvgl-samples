@@ -23,7 +23,15 @@ CHIP_ERROR PostServerInit()
     DynamicEndpointManager::Init();
 
     static RegisteredServerCluster<ExtensionLoaderCluster> sExtensionLoaderCluster;
-    return CodegenDataModelProvider::Instance().Registry().Register(sExtensionLoaderCluster.Registration());
+    ReturnErrorOnFailure(CodegenDataModelProvider::Instance().Registry().Register(sExtensionLoaderCluster.Registration()));
+
+    // Not right here: Nordic's init enables the watchdog after this callback,
+    // and a stored extension that hangs has to run into it. This runs next on
+    // the Matter thread, about a second after boot, ahead of controllers
+    // reconnecting, so in practice they don't see the endpoints missing.
+    return DeviceLayer::PlatformMgr().ScheduleWork(
+        [](intptr_t cluster) { reinterpret_cast<ExtensionLoaderCluster *>(cluster)->RestoreExtensions(); },
+        reinterpret_cast<intptr_t>(&sExtensionLoaderCluster.Cluster()));
 }
 
 } // namespace

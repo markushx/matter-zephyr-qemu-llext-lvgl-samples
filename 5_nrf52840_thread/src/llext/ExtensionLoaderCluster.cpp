@@ -9,6 +9,7 @@
 #include <app/data-model/Nullable.h>
 #include <app/data-model/StructDecodeIterator.h>
 #include <app/server-cluster/AttributeListBuilder.h>
+#include <crypto/RandUtils.h>
 #include <lib/support/CodeUtils.h>
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
@@ -18,7 +19,9 @@
 #include <zephyr/llext/llext.h>
 #include <zephyr/sys/crc.h>
 
+#include <cerrno>
 #include <cstdio>
+#include <cstring>
 
 using namespace chip::app;
 using namespace chip::app::DataModel;
@@ -185,7 +188,7 @@ void ExtensionLoaderCluster::OnPollTimer(chip::System::Layer * layer, void * con
     {
         if (slot.poll != nullptr)
         {
-            DynamicEndpointManager::SetCurrentOwner(&slot);
+            DynamicEndpointManager::SetCurrentOwner(&slot, slot.uniqueIdSeed);
             slot.poll();
             DynamicEndpointManager::SetCurrentOwner(nullptr);
         }
@@ -193,6 +196,30 @@ void ExtensionLoaderCluster::OnPollTimer(chip::System::Layer * layer, void * con
 
     // Keep ticking only while something is loaded.
     self->mPollTimerRunning = self->LoadedExtensions() != 0 && layer->StartTimer(kPollInterval, OnPollTimer, self) == CHIP_NO_ERROR;
+}
+
+void ExtensionLoaderCluster::OnRestoreStable(chip::System::Layer * layer, void * context)
+{
+    auto * self = static_cast<ExtensionLoaderCluster *>(context);
+
+    for (size_t i = 0; i < kMaxExtensions; i++)
+    {
+        ExtensionStore::Record record;
+        if (self->mSlots[i].ext != nullptr && ExtensionStore::ReadRecord(i, record) && record.attempts != 0)
+        {
+            record.attempts = 0;
+            LogErrorOnFailure(ExtensionStore::WriteRecord(i, record));
+        }
+    }
+}
+
+void ExtensionLoaderCluster::SetDisabled(size_t slotIndex, bool disabled)
+{
+    const uint8_t bit    = static_cast<uint8_t>(1 << slotIndex);
+    const uint8_t bitmap = disabled ? (mDisabledExtensions | bit) : (mDisabledExtensions & ~bit);
+    VerifyOrReturn(mDisabledExtensions != bitmap);
+    mDisabledExtensions = bitmap;
+    NotifyAttributeChanged(chip::to_underlying(AttributeId::kDisabledExtensions));
 }
 
 void ExtensionLoaderCluster::SetTransferStatus(TransferStatus status)
@@ -211,6 +238,8 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::ReadAttribute(const DataMo
         return encoder.Encode(static_cast<uint8_t>(mTransferStatus));
     case chip::to_underlying(AttributeId::kLoadedExtensions):
         return encoder.Encode(LoadedExtensions());
+    case chip::to_underlying(AttributeId::kDisabledExtensions):
+        return encoder.Encode(mDisabledExtensions);
     case Clusters::Globals::Attributes::FeatureMap::Id:
         return encoder.Encode(static_cast<uint32_t>(0));
     case Clusters::Globals::Attributes::ClusterRevision::Id:
@@ -228,6 +257,8 @@ CHIP_ERROR ExtensionLoaderCluster::Attributes(const ConcreteClusterPath & path,
           std::nullopt },
         { chip::to_underlying(AttributeId::kLoadedExtensions), chip::BitMask<AttributeQualityFlags>(), chip::Access::Privilege::kView,
           std::nullopt },
+        { chip::to_underlying(AttributeId::kDisabledExtensions), chip::BitMask<AttributeQualityFlags>(),
+          chip::Access::Privilege::kView, std::nullopt },
     };
     AttributeListBuilder listBuilder(builder);
     return listBuilder.Append(chip::Span<const DataModel::AttributeEntry>(entries), {});
@@ -237,10 +268,10 @@ CHIP_ERROR ExtensionLoaderCluster::AcceptedCommands(const ConcreteClusterPath & 
                                                     chip::ReadOnlyBufferBuilder<DataModel::AcceptedCommandEntry> & builder)
 {
     DataModel::AcceptedCommandEntry commands[] = {
-        { chip::to_underlying(CommandId::kLoadStart), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kOperate },
-        { chip::to_underlying(CommandId::kLoadChunk), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kOperate },
-        { chip::to_underlying(CommandId::kLoadDone), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kOperate },
-        { chip::to_underlying(CommandId::kUnload), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kOperate },
+        { chip::to_underlying(CommandId::kLoadStart), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kAdminister },
+        { chip::to_underlying(CommandId::kLoadChunk), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kAdminister },
+        { chip::to_underlying(CommandId::kLoadDone), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kAdminister },
+        { chip::to_underlying(CommandId::kUnload), chip::BitMask<CommandQualityFlags>(), chip::Access::Privilege::kAdminister },
     };
     return builder.AppendElements(chip::Span<DataModel::AcceptedCommandEntry>(commands));
 }
@@ -272,8 +303,10 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleLoadStart(chip::TLV:
 
     ResetTransfer();
 
-    mBuffer = static_cast<uint8_t *>(k_malloc(fields.totalSize));
+    const size_t alignedSize = ExtensionStore::AlignedSize(fields.totalSize);
+    mBuffer                  = static_cast<uint8_t *>(k_malloc(alignedSize));
     VerifyOrReturnError(mBuffer != nullptr, Status::ResourceExhausted);
+    memset(mBuffer + fields.totalSize, 0xFF, alignedSize - fields.totalSize);
 
     mExpectedSize = fields.totalSize;
     mExpectedCrc  = fields.crc32;
@@ -326,35 +359,41 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleLoadDone()
         return Status::Failure;
     }
 
-    Slot * slot = nullptr;
-    for (Slot & candidate : mSlots)
+    size_t slotIndex = 0;
+    while (slotIndex < kMaxExtensions && mSlots[slotIndex].ext != nullptr)
     {
-        if (candidate.ext == nullptr)
-        {
-            slot = &candidate;
-            break;
-        }
+        slotIndex++;
     }
-    if (slot == nullptr)
+    if (slotIndex == kMaxExtensions)
     {
         ChipLogError(NotSpecified, "ExtensionLoader: all %u slots in use, unload an extension first",
                      static_cast<unsigned>(kMaxExtensions));
         SetTransferStatus(TransferStatus::kError);
         return Status::ResourceExhausted;
     }
-    const unsigned slotIndex = static_cast<unsigned>(slot - mSlots);
 
-    // llext identifies extensions by name: loading under a name that is
-    // already in use would just bump that extension's use count instead of
-    // loading the new binary. One name per slot.
-    char name[8];
-    snprintf(name, sizeof(name), "ext%u", slotIndex);
+    // A disabled extension may still be stored here. This replaces it.
+    ExtensionStore::DeleteRecord(slotIndex);
+    SetDisabled(slotIndex, false);
 
-    struct llext_buf_loader bufLoader = LLEXT_WRITABLE_BUF_LOADER(mBuffer, mExpectedSize);
-    struct llext_load_param loadParam = LLEXT_LOAD_PARAM_DEFAULT;
-    struct llext * ext                = nullptr;
+    // Store it now, because llext_load() relocates the binary in its buffer.
+    // It only counts as stored once the record is written below, after it ran:
+    // one that crashes right away is simply gone after the reset.
+    int rc = ExtensionStore::WriteBinary(slotIndex, mBuffer, ExtensionStore::AlignedSize(mExpectedSize));
+    if (rc != 0)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: storing the extension failed: %d", rc);
+        SetTransferStatus(TransferStatus::kError);
+        return Status::Failure;
+    }
 
-    int rc = llext_load(&bufLoader.loader, name, &ext, &loadParam);
+    ExtensionStore::Record record = {};
+    record.size                   = static_cast<uint32_t>(mExpectedSize);
+    record.crc                    = mExpectedCrc;
+    record.firmwareId             = ExtensionStore::FirmwareId();
+    record.uniqueIdSeed           = chip::Crypto::GetRandU32();
+
+    rc = LoadIntoSlot(slotIndex, mBuffer, mExpectedSize, record.uniqueIdSeed, {});
     if (rc != 0)
     {
         ChipLogError(NotSpecified, "ExtensionLoader: llext_load failed: %d", rc);
@@ -362,36 +401,161 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleLoadDone()
         return Status::Failure;
     }
 
-    ChipLogProgress(NotSpecified, "ExtensionLoader: loaded extension into slot %u", slotIndex);
-
     // Ownership of mBuffer now belongs to the loaded extension's lifetime,
     // not to the transfer -- do not free it. See ResetTransfer()'s comment.
-    slot->ext      = ext;
-    slot->buffer   = mBuffer;
     mBuffer        = nullptr;
     mReceivedBytes = 0;
     mExpectedSize  = 0;
     mExpectedCrc   = 0;
+
+    record.endpointCount = static_cast<uint8_t>(
+        DynamicEndpointManager::GetEndpoints(&mSlots[slotIndex], record.endpoints, MATTER_ARRAY_SIZE(record.endpoints)));
+    CHIP_ERROR err = ExtensionStore::WriteRecord(slotIndex, record);
+    if (err != CHIP_NO_ERROR)
+    {
+        // Don't leave it running while it looks like it will come back.
+        ChipLogError(NotSpecified, "ExtensionLoader: storing the record failed: %" CHIP_ERROR_FORMAT, err.Format());
+        UnloadExtension(mSlots[slotIndex]);
+        SetTransferStatus(TransferStatus::kError);
+        return Status::Failure;
+    }
+
+    SetTransferStatus(TransferStatus::kLoaded);
+    return Status::Success;
+}
+
+int ExtensionLoaderCluster::LoadIntoSlot(size_t slotIndex, uint8_t * buffer, size_t size, uint32_t uniqueIdSeed,
+                                         chip::Span<const chip::EndpointId> restoredEndpoints)
+{
+    Slot & slot = mSlots[slotIndex];
+
+    // llext identifies extensions by name: loading under a name that is
+    // already in use would just bump that extension's use count instead of
+    // loading the new binary. One name per slot.
+    char name[8];
+    snprintf(name, sizeof(name), "ext%u", static_cast<unsigned>(slotIndex));
+
+    struct llext_buf_loader bufLoader = LLEXT_WRITABLE_BUF_LOADER(buffer, size);
+    struct llext_load_param loadParam = LLEXT_LOAD_PARAM_DEFAULT;
+    struct llext * ext                = nullptr;
+
+    int rc = llext_load(&bufLoader.loader, name, &ext, &loadParam);
+    VerifyOrReturnValue(rc == 0, rc);
+
+    ChipLogProgress(NotSpecified, "ExtensionLoader: loaded extension into slot %u", static_cast<unsigned>(slotIndex));
+
+    slot.ext          = ext;
+    slot.buffer       = buffer;
+    slot.uniqueIdSeed = uniqueIdSeed;
 
     // "run" is the extension's entry point, where it adds its endpoints.
     // Whatever it adds belongs to this slot and goes away with it.
     auto run = reinterpret_cast<ExtensionFn>(const_cast<void *>(llext_find_sym(&ext->exp_tab, kRunSymbol)));
     if (run != nullptr)
     {
-        DynamicEndpointManager::SetCurrentOwner(slot);
+        DynamicEndpointManager::SetCurrentOwner(&slot, uniqueIdSeed);
+        DynamicEndpointManager::SetRestoredEndpoints(restoredEndpoints);
         run();
         DynamicEndpointManager::SetCurrentOwner(nullptr);
     }
 
-    slot->poll = reinterpret_cast<ExtensionFn>(const_cast<void *>(llext_find_sym(&ext->exp_tab, kPollSymbol)));
+    slot.poll = reinterpret_cast<ExtensionFn>(const_cast<void *>(llext_find_sym(&ext->exp_tab, kPollSymbol)));
     if (!mPollTimerRunning)
     {
         mPollTimerRunning = chip::DeviceLayer::SystemLayer().StartTimer(kPollInterval, OnPollTimer, this) == CHIP_NO_ERROR;
     }
 
     NotifyAttributeChanged(chip::to_underlying(AttributeId::kLoadedExtensions));
-    SetTransferStatus(TransferStatus::kLoaded);
-    return Status::Success;
+    return 0;
+}
+
+bool ExtensionLoaderCluster::RestoreSlot(size_t slotIndex, ExtensionStore::Record & record, uint32_t firmwareId)
+{
+    if (record.size == 0 || record.size > kMaxExtensionSize || record.endpointCount > MATTER_ARRAY_SIZE(record.endpoints))
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: invalid record", static_cast<unsigned>(slotIndex));
+        return false;
+    }
+    if (record.firmwareId != firmwareId)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: stored on another firmware, send it again",
+                     static_cast<unsigned>(slotIndex));
+        return false;
+    }
+    if (record.attempts >= kMaxRestoreAttempts)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: disabled after %u failed restores, send it again",
+                     static_cast<unsigned>(slotIndex), record.attempts);
+        return false;
+    }
+
+    // Counted before running anything of it: if it takes the device down,
+    // nothing runs afterwards that could count it.
+    record.attempts++;
+    if (ExtensionStore::WriteRecord(slotIndex, record) != CHIP_NO_ERROR)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: can't count the attempt, not restoring",
+                     static_cast<unsigned>(slotIndex));
+        return false;
+    }
+
+    const size_t alignedSize = ExtensionStore::AlignedSize(record.size);
+    auto * buffer            = static_cast<uint8_t *>(k_malloc(alignedSize));
+    if (buffer == nullptr)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: out of memory", static_cast<unsigned>(slotIndex));
+        return false;
+    }
+
+    int rc = ExtensionStore::ReadBinary(slotIndex, buffer, alignedSize);
+    if (rc == 0 && crc32_ieee(buffer, record.size) != record.crc)
+    {
+        rc = -EBADMSG;
+    }
+    if (rc == 0)
+    {
+        rc = LoadIntoSlot(slotIndex, buffer, record.size, record.uniqueIdSeed,
+                          chip::Span<const chip::EndpointId>(record.endpoints, record.endpointCount));
+    }
+    if (rc != 0)
+    {
+        ChipLogError(NotSpecified, "ExtensionLoader: slot %u: restoring failed: %d", static_cast<unsigned>(slotIndex), rc);
+        k_free(buffer);
+        return false;
+    }
+    return true;
+}
+
+void ExtensionLoaderCluster::RestoreExtensions()
+{
+    uint32_t firmwareId = 0;
+    bool restored       = false;
+
+    for (size_t i = 0; i < kMaxExtensions; i++)
+    {
+        ExtensionStore::Record record;
+        if (!ExtensionStore::ReadRecord(i, record))
+        {
+            continue;
+        }
+        if (firmwareId == 0)
+        {
+            firmwareId = ExtensionStore::FirmwareId();
+        }
+        if (RestoreSlot(i, record, firmwareId))
+        {
+            restored = true;
+        }
+        else
+        {
+            SetDisabled(i, true);
+        }
+    }
+
+    if (restored)
+    {
+        LogErrorOnFailure(chip::DeviceLayer::SystemLayer().StartTimer(kRestoreStablePeriod, OnRestoreStable, this));
+    }
 }
 
 DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleUnload(chip::TLV::TLVReader & input)
@@ -399,9 +563,11 @@ DataModel::ActionReturnStatus ExtensionLoaderCluster::HandleUnload(chip::TLV::TL
     UnloadFields fields;
     VerifyOrReturnError(fields.Decode(input) == CHIP_NO_ERROR, Status::InvalidCommand);
     VerifyOrReturnError(fields.slot < kMaxExtensions, Status::ConstraintError);
-    VerifyOrReturnError(mSlots[fields.slot].ext != nullptr, Status::NotFound);
+    VerifyOrReturnError(mSlots[fields.slot].ext != nullptr || (mDisabledExtensions & (1 << fields.slot)) != 0, Status::NotFound);
 
     UnloadExtension(mSlots[fields.slot]);
+    ExtensionStore::DeleteRecord(fields.slot);
+    SetDisabled(fields.slot, false);
     ChipLogProgress(NotSpecified, "ExtensionLoader: unloaded slot %u", fields.slot);
     return Status::Success;
 }

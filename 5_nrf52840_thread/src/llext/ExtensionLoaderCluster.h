@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ExtensionStore.h"
+
 #include <app/ConcreteClusterPath.h>
 #include <app/data-model-provider/ActionReturnStatus.h>
 #include <app/server-cluster/DefaultServerCluster.h>
@@ -20,6 +22,10 @@ struct llext;
 // extension into the lowest free slot; Unload(slot) removes it again,
 // together with every endpoint it added. LoadedExtensions is a bitmap of the
 // slots in use.
+//
+// A loaded extension survives a reboot, see ExtensionStore and
+// RestoreExtensions(). That makes installing one a lasting change to what runs
+// on the device, with full privileges, so the commands need Administer.
 //
 // Not present in any ZAP file -- hand-registered on EP1 directly against
 // CodegenDataModelProvider's registry (see AppTask::Init()). Chosen
@@ -46,11 +52,23 @@ public:
         // 1 is ExtensionValue in the 2_llext/ and 3_llext_lvgl/ samples.
         // bitmap8: bit N is set while slot N holds a loaded extension.
         kLoadedExtensions = 2,
+        // bitmap8: bit N is set if slot N has a stored extension that wasn't
+        // restored at boot, see RestoreExtensions(). Unload(N) or sending
+        // another extension clears it.
+        kDisabledExtensions = 3,
     };
 
     // Bounded by the RAM an nRF52840 has left next to the Matter stack, as is
     // kMaxExtensionSize below (CONFIG_HEAP_MEM_POOL_SIZE).
-    static constexpr size_t kMaxExtensions = 2;
+    static constexpr size_t kMaxExtensions = ExtensionStore::kSlotCount;
+
+    // A stored extension is given up on after this many restores in a row
+    // that ended in a reset before the device had been up for
+    // kRestoreStablePeriod. This counts for all slots: it isn't known which
+    // extension caused the reset. A restore that is just unlucky (a power cut)
+    // doesn't disable anything, as it takes this many.
+    static constexpr uint8_t kMaxRestoreAttempts = 3;
+    static constexpr chip::System::Clock::Timeout kRestoreStablePeriod = chip::System::Clock::Seconds16(60);
 
     // Optional symbols an extension can export: its entry point, and a
     // function called about once per second for as long as it is loaded.
@@ -76,10 +94,17 @@ public:
     static constexpr size_t kMaxChunkSize = 900;
 
     // Largest extension binary we'll buffer in RAM before loading.
-    static constexpr size_t kMaxExtensionSize = 8 * 1024;
+    static constexpr size_t kMaxExtensionSize = ExtensionStore::kSlotSize;
 
     ExtensionLoaderCluster() : DefaultServerCluster({ kEndpointId, kClusterId }) {}
     ~ExtensionLoaderCluster() override;
+
+    // Loads the extensions stored by earlier LoadDone commands, unless they
+    // were stored on another firmware or keep resetting the device (see
+    // kMaxRestoreAttempts); those end up in kDisabledExtensions instead. Their
+    // state in RAM, an On/Off value for example, starts over. Call once, on the
+    // Matter thread, once the watchdog runs.
+    void RestoreExtensions();
 
     // ServerClusterInterface
     chip::app::DataModel::ActionReturnStatus ReadAttribute(const chip::app::DataModel::ReadAttributeRequest & request,
@@ -110,13 +135,22 @@ private:
         // ResetTransfer()'s comment.
         uint8_t * buffer = nullptr;
         ExtensionFn poll = nullptr;
+        uint32_t uniqueIdSeed = 0;
     };
 
+    // Runs the binary in `buffer`, which modifies it and which then belongs to
+    // the slot. `restoredEndpoints` are the IDs its endpoints had before.
+    int LoadIntoSlot(size_t slotIndex, uint8_t * buffer, size_t size, uint32_t uniqueIdSeed,
+                     chip::Span<const chip::EndpointId> restoredEndpoints);
+    bool RestoreSlot(size_t slotIndex, ExtensionStore::Record & record, uint32_t firmwareId);
+    void SetDisabled(size_t slotIndex, bool disabled);
     void UnloadExtension(Slot & slot);
     uint8_t LoadedExtensions() const;
     static void OnPollTimer(chip::System::Layer * layer, void * context);
+    static void OnRestoreStable(chip::System::Layer * layer, void * context);
 
     TransferStatus mTransferStatus = TransferStatus::kIdle;
+    uint8_t mDisabledExtensions    = 0;
     uint8_t * mBuffer              = nullptr;
     size_t mExpectedSize           = 0;
     size_t mReceivedBytes          = 0;

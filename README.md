@@ -513,14 +513,15 @@ nRF52840 DK. Differences from the QEMU sample:
 - **SDK:** nRF Connect SDK v3.2.0 and its Matter fork, with Nordic's `Nrf::Matter`
   init and Thread driver, and Nordic's `matter_bridge` data model.
 - **Flash:** no MCUboot, OTA or factory data, no shell, no logging, LTO on. It uses
-  590 KB of 992 KB flash and 195 KB of 256 KB RAM. There are **no firmware updates
-  over the air**; flash with J-Link. `logging.conf` adds a UART console (657 KB).
+  593 KB of 976 KB flash and 195 KB of 256 KB RAM. There are **no firmware updates
+  over the air**; flash with J-Link. `logging.conf` adds a UART console (661 KB).
 - **Credentials:** the SDK's test DAC and the default test pairing code
   (20202021 / 3840, manual code `34970112332`). A matterjs-server only accepts this
   with `--enable-test-net-dcl`.
 - **Limits:** two extensions at a time, 8 KiB each, four dynamic endpoints.
-- **Extensions don't survive a reboot:** they live in RAM, so send them again after
-  a restart. Their endpoints disappear until then.
+- **Extensions survive a reboot,** with the same endpoint IDs and `UniqueID`s. Their
+  state in RAM doesn't, so a light comes back in its default state. See
+  [below](#extensions-across-reboots).
 - **Memory protection:** `CONFIG_ARM_MPU=n`, because extensions run from RAM. That
   also means no stack guards.
 
@@ -588,6 +589,57 @@ listed it in the Aggregator's parts list without being told, and read and toggle
 with `device_command`. How the Home Assistant UI presents such an endpoint hasn't been
 checked.
 
+### Extensions across reboots
+
+`LoadDone` stores the binary in the 16 KiB `extension_storage` flash partition, and
+`RestoreExtensions()` loads it again about a second after boot. What makes a stored
+binary valid is a small record in the settings, written after the extension has run.
+So a power cut while storing leaves nothing half-valid, an extension that crashes
+straight away isn't kept, and a factory reset, which clears the settings, invalidates
+the binaries too (their bytes stay in flash until overwritten).
+
+An extension runs with full privileges, and now stays across reboots, so:
+
+- **The commands need Administer**, not Operate. There is still no signature check:
+  the CRC only detects corruption. Don't use this beyond a demo without adding one.
+- **An extension that keeps taking the device down gets disabled.** Each restore is
+  counted first, and the count is cleared once the device has been up for 60 seconds.
+  After 3 restores in a row without that, the boot skips the extension. The count is
+  per device, not per extension, because it isn't known which one caused the reset:
+  all stored extensions get disabled. So do 3 quick power cycles on a healthy device.
+- **Hangs count too:** the watchdog (30 s, fed every 10 s) turns them into resets. It
+  covers the main and Matter threads in general, not only extensions.
+- **Another firmware disables stored extensions:** each record holds a CRC of the
+  firmware image it was stored on, since a changed struct layout wouldn't be noticed at
+  load time. Any firmware change means sending extensions again, built with the new EDK.
+
+`DisabledExtensions` (attribute 3) is a bitmap of the slots this happened to. Sending
+another extension replaces a disabled one, or `Unload` clears it. Reading it, and
+`BootReason` (4 is a hardware watchdog reset, 6 a software reset):
+
+```json
+{"command": "read_attribute", "args": {"node_id": 9, "attribute_path": "1/4294048769/3"}}
+{"command": "read_attribute", "args": {"node_id": 9, "attribute_path": "0/51/4"}}
+```
+
+Tested on the DK on the same network, on logging and release builds. The logging build
+had `CONFIG_RESET_ON_FATAL_ERROR=y` added, because `logging.conf` halts on a fatal error
+instead, so there a crashing extension needs a manual reset for each attempt.
+
+| Test | Result |
+| --- | --- |
+| Reboot with `onoff_light` loaded | Same endpoint and `UniqueID`, server can toggle it |
+| Load A and B, unload A, reboot | B keeps its endpoint; the next one sent gets a new ID |
+| Crash in `run()` | Device resets once, extension is not kept |
+| Crash in `poll()`, 5 s after boot | 3 restores, then disabled; `Unload` clears it |
+| Hang in `poll()` | Watchdog resets, 3 restores, then disabled |
+| 4 reboots, 75 s apart, healthy extension | Stays loaded |
+| Reflash with another firmware | Disabled; sending an extension replaces it |
+| Reflash with `--sectorerase` | Fabrics kept, settings partition byte-identical |
+
+A factory reset hasn't been tried, as it would remove the DK from Home Assistant. That it
+invalidates the stored binaries comes from reading the SDK's reset code.
+
 ### Porting notes
 
 What differed from `4_llext_dynamic/`, in case this is moved to another board or SDK:
@@ -613,6 +665,19 @@ What differed from `4_llext_dynamic/`, in case this is moved to another board or
   new first sector. To keep it, copy the old sector to the new start of the partition and
   erase the original (NVS offsets are relative to the sector). Going from 8 to 32 KiB this
   meant copying `0xFE000-0xFEFFF` to `0xF8000`, which brought both fabrics back.
+- **Partitions are pinned in `pm_static.yml`,** so that a change to the extension storage
+  can't move the settings.
+- **`llext_load()` relocates the binary in its buffer**, so it has to be stored before
+  loading. The buffer is then no longer the binary that was sent.
+- **The restore has to be scheduled, not called from `mPostServerInitClbk`:** Nordic's init
+  enables the watchdog after that callback, and a hang there would never reset.
+- **The nRF52's watchdog keeps running across a soft reset.** A crash loop faster than the
+  feed interval never feeds it, so 30 s after the last feed it fires, which shows as one
+  more reboot, with `BootReason` 4, after the loop has ended. Harmless.
+- **`nrfjprog` can trigger the watchdog:** a plain `--memrd` on a running device caused a
+  watchdog reset (seen once, a `--memwr` right after didn't). Expect a reboot when attaching.
+- **After a reboot, commands fail for a while** (`CHIP Error 0x000000DB`, or `Operation
+  aborted` from the server) until sessions are re-established, which took up to two minutes.
 - **`bridge.zap` is Nordic's, unmodified.** It still declares OTA Requestor and Wi-Fi
   diagnostics, and its placeholder endpoint has clusters no extension here uses. Trimming them
   needs a ZAP regeneration and would save more flash.
