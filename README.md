@@ -35,6 +35,10 @@ own with no extra CLI flags:
   with nRF Connect SDK v3.2.0 and optimized for flash space. Unlike the others
   it does not use the `connectedhomeip` worktree or `qemu_x86`; see
   [its section](#matter-over-thread-on-the-nrf52840-dk-5_nrf52840_thread).
+- **[`6_nrf52840_signed/`](6_nrf52840_signed/)** — `5_nrf52840_thread/`, but the
+  device only runs extensions signed for its firmware, with MCUboot's imgtool as
+  the signing tool and the P-256 code Matter already needs for verifying. See
+  [its section](#signed-extensions-6_nrf52840_signed).
 
 Each QEMU sample carries its own `prj.conf`, `boards/qemu_x86.{conf,overlay}`,
 `include/CHIPProjectConfig.h`, and `src/`. `boards/qemu_x86.overlay` is
@@ -681,6 +685,75 @@ What differed from `4_llext_dynamic/`, in case this is moved to another board or
 - **`bridge.zap` is Nordic's, unmodified.** It still declares OTA Requestor and Wi-Fi
   diagnostics, and its placeholder endpoint has clusters no extension here uses. Trimming them
   needs a ZAP regeneration and would save more flash.
+
+## Signed extensions (`6_nrf52840_signed/`)
+
+`5_nrf52840_thread/`, except that the device refuses any extension that isn't signed
+for its firmware. Before, anyone with Administer on any fabric could run code on it.
+No new crypto is involved: extensions are signed with MCUboot's `imgtool` from NCS, and
+checked with CHIP's `P256PublicKey`, which Matter links in anyway. The firmware grows
+by about 1 KiB, and a signed extension by about 200 bytes.
+
+**Status:** not tried on the DK yet. The firmware builds, and
+`scripts/run-llext-ztest.sh 6_nrf52840_signed/tests/signature` runs the check itself
+under QEMU with CHIP's PSA crypto, against images from `imgtool`. What only the DK can
+show: `ExtensionLoaderCluster` running the ELF behind the header, the restore at boot,
+how long verifying takes there, and that `ExtensionStore::FirmwareId()` gets the same
+value as the script (`_flash_used` is the size of `zephyr.bin`, and `merged.hex` has the
+same bytes, so it should).
+
+### Signing
+
+```sh
+# With the PATH from "Building" above: imgtool needs the toolchain's Python packages.
+# Once. Writes the private key to ~/.config/matter-zephyr-qemu/, and the public key to
+# 6_nrf52840_signed/keys/, from where the firmware build embeds it.
+scripts/sign-llext.py keygen
+
+west build -b nrf52840dk/nrf52840 --sysbuild -d build-nrf-signed 6_nrf52840_signed
+nrfjprog --family NRF52 --program build-nrf-signed/merged.hex --sectorerase --verify --reset
+
+# Build the extension from this build's EDK as in "Building" above, then:
+scripts/sign-llext.py sign 6_nrf52840_signed/extensions/counter/build/counter.llext \
+    --firmware build-nrf-signed/6_nrf52840_signed/zephyr/zephyr.bin
+scripts/send-llext.py 6_nrf52840_signed/extensions/counter/build/counter.signed.llext <chip-tool-node-id>
+```
+
+The repository has a public key whose private key is on the machine it was created on.
+Anywhere else, run `keygen` first, which replaces the public key, and rebuild. There's
+no way to add a second key to a device: a new key means flashing new firmware.
+
+### What the device does
+
+The image is `imgtool`'s format: a 32-byte header, the unchanged ELF, the firmware ID in
+a signed TLV (`0xa0`, the same CRC of the firmware as in `5_nrf52840_thread/`), and the
+signature over all of these.
+
+- **`LoadDone` verifies first**, before writing to flash, touching a stored extension, or
+  parsing any of the ELF. A refusal is a cluster-specific status on the command, as
+  logging is usually off: 1 for no valid signature, 2 for signed for another firmware.
+- **Every boot verifies again**, before the restore is counted. What fails ends up in
+  `DisabledExtensions`, as before.
+- **Sample 5's records are ignored:** they use another settings key, so a stored unsigned
+  extension doesn't come back when switching to this firmware, and doesn't show up as
+  disabled either. Sending an extension overwrites its bytes in flash.
+
+### What this doesn't do
+
+- **A signed extension still has full control:** no MPU, as in sample 5. A bug in one
+  can read all memory, including Matter's keys. Signing says who wrote it, not that it's safe.
+- **Physical access defeats it:** there's no secure boot, and `CONFIG_NRF_APPROTECT_LOCK`
+  isn't set, so anyone with SWD can replace the firmware along with the key.
+- **Revoking means reflashing:** there's no version check or security counter. An old
+  signed extension can be sent again for as long as the firmware stays the same, and
+  any firmware change invalidates all signatures. That also means signing extensions
+  again after every firmware build that changes the image.
+- **The private key is a plain file**, good enough for a demo. For real use it belongs
+  in an HSM or signing service, which `imgtool` can work with through `--vector-to-sign`.
+
+Upstream Zephyr has no signing yet. [RFC #119605](https://github.com/zephyrproject-rtos/zephyr/issues/119605)
+proposes it, with `imgtool`'s format suggested in its comments but nothing decided, so
+this format may not match what ends up in Zephyr.
 
 ## Debugging tools
 
